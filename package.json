@@ -24,6 +24,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "eval:smoke": "node --experimental-strip-types eval/run-eval.ts smoke",
     "pack:dry": "npm pack --dry-run",
     "smoke:help": "pi --no-extensions -e ./extensions/scrutiny.ts --mode json --no-session \"/scrutiny help\""
   },

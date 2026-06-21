@@ -35,6 +35,8 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 
 	if (process.env.PI_SCRUTINY_DEPTH) {
 		const result = emptyError({ runId, surface, startedAt, error: "nested scrutiny invocation blocked", failure_reason: "recursion_capped" });
+		safeMkdir(runDir);
+		await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
 		return { result, brief: "Scrutiny blocked: nested invocation." };
 	}
 
@@ -46,6 +48,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 
 	if (panelModels.length === 0) {
 		const result = emptyError({ runId, surface, startedAt, error: "No panel models configured. Set PI_SCRUTINY_PANEL or pass panel.", failure_reason: "missing_panel" });
+		await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
 		return { result, brief: result.error ?? "Scrutiny failed." };
 	}
 

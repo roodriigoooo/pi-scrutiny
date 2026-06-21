@@ -1,4 +1,5 @@
 node_modules/
 .pi/
+eval/out/
 PLAN.md
 .DS_Store
