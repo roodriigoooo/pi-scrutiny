@@ -39,6 +39,7 @@ function sharedInstructions(): string[] {
 		"- Answer independently. Do not assume other panelists will cover gaps.",
 		"- Prefer concrete, testable claims over vibes.",
 		"- Surface uncertainty and missing evidence.",
+		"- You are running without tools unless the packet says otherwise. Do not say you will read files, call tools, or inspect the repo later; use only the packet and name missing evidence explicitly.",
 		"- Do not edit files. Do not propose a final patch to merge. This is deliberation, not the edit.",
 		"- Keep answer dense. No preamble.",
 	];
@@ -98,7 +99,7 @@ export function panelPrompt(input: { packet: string; role: string; surface: Scru
 	const spec = SURFACE_SPECS[input.surface];
 	return [
 		`${spec.heading} Role: ${input.role}.`,
-		"Produce one independent analysis.",
+		"Produce one independent analysis from the packet only. Do not claim you will call tools or inspect files.",
 		"Return Markdown with these headings exactly:",
 		...spec.panelHeadings,
 		"",

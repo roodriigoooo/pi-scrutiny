@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { buildDeterministicAnalysis, detectMush, formatFailureBrief, formatScrutinyBrief, formatVerifyBrief } from "./analysis.js";
-import { SURFACE_DEFAULTS, readEnvConfig, resolveJudge, resolvePanel, resolveTools } from "./config.js";
+import { SURFACE_DEFAULTS, readScrutinyConfig, resolveJudge, resolvePanel, resolveTools } from "./config.js";
 import { buildTaskPacket, judgePrompt, panelPrompt, panelRoles } from "./packet.js";
 import { runModelTask } from "./runner.js";
-import { recordRunEnd, recordRunStart } from "./registry.js";
+import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
 import type { ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
 import { createRunId, formatDuration, formatTokens, scrutinyDataDir, parseAnalysisJson, safeMkdir, truncate } from "./util.js";
 
@@ -16,6 +16,7 @@ type RunScrutinyInput = {
 	exec: ExecLike;
 	signal?: AbortSignal;
 	onProgress?: (progress: ScrutinyRunProgress) => void;
+	projectTrusted?: boolean;
 };
 
 const PANEL_EXCERPT_CHARS = 2_400;
@@ -23,7 +24,7 @@ const PANEL_EXCERPT_CHARS = 2_400;
 export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: ScrutinyRunResult; brief: string }> {
 	const startedAt = Date.now();
 	const runId = createRunId();
-	const config = readEnvConfig();
+	const config = readScrutinyConfig({ cwd: input.cwd, projectTrusted: input.projectTrusted });
 	const surface: ScrutinySurface = resolveSurface(input.params);
 	const panelModels = surface === "verify" ? [] : resolvePanel(input.params, config);
 	const tools = resolveTools(input.params, config);
@@ -331,7 +332,9 @@ function mergeAnalysis(deterministic: ScrutinyAnalysis, judge: ScrutinyAnalysis)
 }
 
 function emit(input: { onProgress?: (progress: ScrutinyRunProgress) => void }, progress: ScrutinyRunProgress): void {
-	input.onProgress?.({ ...progress, updatedAt: Date.now() });
+	const updated = { ...progress, updatedAt: Date.now() };
+	recordRunProgress(updated);
+	input.onProgress?.(updated);
 }
 
 function updatePanel(progress: ScrutinyRunProgress, index: number, patch: Partial<ScrutinyRunProgress["panel"][number]>): ScrutinyRunProgress {

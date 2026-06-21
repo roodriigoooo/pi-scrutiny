@@ -88,6 +88,13 @@ export type VerifyReport = {
 	durationMs: number;
 };
 
+export type ScrutinyConfigSource = {
+	scope: "global" | "project" | "env";
+	path?: string;
+	status: "loaded" | "missing" | "skipped" | "error";
+	reason?: string;
+};
+
 export type ScrutinyConfig = {
 	panel: string[];
 	judge?: string;
@@ -101,6 +108,8 @@ export type ScrutinyConfig = {
 	gitDiffCharLimit: number;
 	tools: string[];
 	verifyChecks: VerifyCheckSpec[];
+	councils: Council[];
+	configSources: ScrutinyConfigSource[];
 };
 
 export type VerifyCheckSpec = {

@@ -2,7 +2,7 @@
 
 a pi extension for multi-model deliberation and objective repo verification.
 
-the spark was openrouter scrutiny: send a hard prompt to a panel of models and use the combined signal. but that spark only holds for **bounded, research-style synthesis**. it is not strong evidence that fusing model outputs helps long-horizon coding.
+the spark was openrouter fusion: send a hard prompt to a panel of models and use the combined signal. but that spark only holds for **bounded, research-style synthesis**. it is not strong evidence that fusing model outputs helps long-horizon coding.
 
 so this extension is built around a stricter idea:
 
@@ -23,7 +23,7 @@ risks        per-class risk review of a patch (concurrency, reactive-chain, api-
 verify       runs tests/typecheck/lint as the objective arbiter. no panel, no judge. blocks.
 ```
 
-deliberation surfaces run in the **background** and deliver results as a follow-up when the agent is idle; `verify` blocks. the main pi agent synthesizes and acts.
+deliberation surfaces run **inline** and stream compact status chips while the panel works; `verify` blocks on objective checks. the main pi agent synthesizes and acts.
 
 ## principles
 
@@ -49,19 +49,41 @@ the runner inside this repo is intentionally tiny and swappable. long term it sh
 
 ## configure
 
-```bash
-export PI_SCRUTINY_PANEL="openai/gpt-5.5,moonshotai/kimi-2.7-code"
-export PI_SCRUTINY_JUDGE="openai/gpt-5.5"
-# optional: custom verify checks (JSON), defaults to npm run check / npm test / npm run lint
-export PI_SCRUTINY_VERIFY_CHECKS='[{"name":"typecheck","command":"npm","args":["run","check"]}]'
-# optional: named council presets (JSON) for repeated panel setups
-export PI_SCRUTINY_COUNCILS='[{"name":"code-duo","surface":"risks","panelists":[{"model":"openai-codex/gpt-5.4-mini","lens":"concurrency"},{"model":"opencode-go/kimi-k2.7-code","lens":"reactive-chain"}],"verify":true}]'
+preferred: edit config inside pi:
+
+```text
+/scrutiny config edit           # global ~/.pi/agent/scrutiny.json
+/scrutiny config edit project   # project .pi/scrutiny.json (trusted projects only)
+/scrutiny config                # show active config + sources
 ```
+
+example `scrutiny.json`:
+
+```json
+{
+  "panel": ["openai-codex/gpt-5.4-mini", "opencode-go/kimi-k2.7-code"],
+  "judge": "openai-codex/gpt-5.4-mini",
+  "verifyChecks": [{ "name": "typecheck", "command": "npm", "args": ["run", "check"] }],
+  "councils": {
+    "code-duo": {
+      "surface": "risks",
+      "panelists": [
+        { "model": "openai-codex/gpt-5.4-mini", "lens": "concurrency" },
+        { "model": "opencode-go/kimi-k2.7-code", "lens": "reactive-chain" }
+      ],
+      "verify": true,
+      "judgeMode": "off"
+    }
+  }
+}
+```
+
+`PI_SCRUTINY_*` env vars still work and override config files for shell-specific experiments.
 
 install locally:
 
 ```bash
-pi install /Users/rosastre/.pi/fusion
+pi install /Users/rosastre/.pi/scrutiny
 ```
 
 or try it once:
@@ -77,6 +99,8 @@ pi -e ./extensions/scrutiny.ts
 /scrutiny models
 /scrutiny runs                               # recent runs + artifact paths (this session)
 /scrutiny councils                           # list named council presets
+/scrutiny config                             # show active config + sources
+/scrutiny config edit                        # edit global config in pi
 /scrutiny verify:                            # run objective checks now
 /scrutiny @code-duo: review this patch       # run a named council
 /scrutiny risks: review this webflux retry patch
@@ -91,7 +115,7 @@ or let the main model call `scrutiny_consult` when the extra spend is worth it.
 
 ## flow
 
-surfaces run **inline** and stream a status footer while the panel works — the footer shows elapsed time, ready/thinking/failed counts, and the current phase (panel / explainer / verify). press **esc** to cancel a run (native pi abort, propagated to panel subprocesses). deliberation can take time; that is expected and deliberate. flow protection here means legibility — surfaces are well-understood, reachable, and show what is happening — not minimal latency.
+surfaces run **inline** and stream a compact status footer plus an active-run dock while the panel works — these show elapsed time, ready/thinking/failed counts, and current phase (panel / evidence map / verify). press **esc** to cancel a foreground run (native pi abort, propagated to panel subprocesses). deliberation can take time; that is expected and deliberate. flow protection here means legibility — surfaces are well-understood, reachable, and show what is happening — not minimal latency.
 
 run tracking: a lightweight in-memory registry records each run (run-id, surface, status, runDir). `/scrutiny runs` lists recent runs with their artifact paths so you can inspect what happened. full outputs persist on disk under `.pi/scrutiny/<run-id>/` regardless of the registry.
 

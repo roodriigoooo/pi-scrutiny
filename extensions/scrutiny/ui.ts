@@ -7,16 +7,18 @@ export function scrutinyStatusText(details: unknown): string {
 	if (isResult(details)) {
 		const ok = details.responses.filter((response) => response.status === "ok").length;
 		const failed = details.failed_models.length;
-		const judge = details.judge ? (details.judge.status === "ok" ? "judge ready" : "judge failed") : "judge skipped";
-		return `scrutiny ${details.status} · ${ok}/${details.responses.length} panel${details.responses.length === 1 ? "" : "s"} ready${failed ? ` · ${failed} failed` : ""} · ${judge} · ${formatDuration(details.durationMs)}`;
+		const judge = details.judge ? (details.judge.status === "ok" ? "map:on" : "map:failed") : "map:off";
+		const panel = details.responses.length ? ` [panel ${ok}/${details.responses.length}]` : " [no panel]";
+		return `scrutiny [${details.status}] [${details.surface}] ${formatDuration(details.durationMs)}${panel}${failed ? ` [fail ${failed}]` : ""} [${judge}]`;
 	}
 	if (isProgress(details)) {
 		const ready = details.panel.filter((item) => item.status === "ready").length;
 		const failed = details.panel.filter((item) => item.status === "failed").length;
 		const running = details.panel.filter((item) => item.status === "running").length;
 		const elapsed = formatDuration(Math.max(0, details.updatedAt - details.startedAt));
-		const phase = details.judge?.status === "running" ? " · explainer thinking" : details.message ? ` · ${details.message}` : "";
-		return `scrutiny ${details.surface} · ${elapsed} · ${ready}/${details.panel.length} ready${running ? ` · ${running} thinking` : ""}${failed ? ` · ${failed} failed` : ""}${phase}`;
+		const phase = progressPhase(details);
+		const panel = details.panel.length ? ` [panel ${ready}/${details.panel.length}]` : " [verify]";
+		return `scrutiny [${details.surface}] ${elapsed}${panel}${running ? ` [thinking ${running}]` : ""}${failed ? ` [fail ${failed}]` : ""} [${phase}]`;
 	}
 	return "scrutiny";
 }
@@ -41,22 +43,99 @@ export function renderScrutinyCall(args: any, theme: any) {
 	const panel = Array.isArray(args?.panel) && args.panel.length ? args.panel : undefined;
 	const judgeMode = args?.judgeMode ?? "auto";
 	const title = theme.fg("toolTitle", theme.bold("scrutiny_consult"));
-	const bits = [theme.fg("accent", surface), panel ? `${panel.length} panel` : "env panel", `judge:${judgeMode}`];
-	return new Text(`${title} ${theme.fg("dim", bits.join(" · "))}`, 0, 0);
+	const bits = [chip(theme, surface, "accent"), chip(theme, panel ? `${panel.length} panel` : "env panel", panel ? "success" : "muted"), chip(theme, `map:${judgeMode}`, judgeMode === "on" ? "warning" : "muted")];
+	return new Text(`${title} ${bits.join(" ")}`, 0, 0);
 }
 
 export function renderScrutinyMessage(message: any, { expanded }: { expanded?: boolean }, theme: any) {
 	const details = message.details;
-	if (!isResult(details)) return new Text(String(message.content ?? "scrutiny"), 0, 0);
+	if (!isResult(details)) return renderStaticMessage(message, theme);
 	if (expanded) return new Markdown(renderExpandedMarkdown(details), 0, 0, getMarkdownTheme());
 	const box = new Box(1, 1, (s: string) => theme.bg("customMessageBg", s));
 	box.addChild(new Text(renderCompactResult(details, theme), 0, 0));
 	return box;
 }
 
+function renderStaticMessage(message: any, theme: any) {
+	const content = String(message.content ?? "scrutiny");
+	const kind = typeof message.details?.kind === "string" ? message.details.kind : inferStaticKind(content);
+	const box = new Box(1, 1, (s: string) => theme.bg("customMessageBg", s));
+	const chips = staticChips(kind).map((item) => chip(theme, item, item === "env override" ? "warning" : "muted"));
+	box.addChild(new Text(`${theme.fg("accent", "◆")} ${theme.bold("scrutiny")} ${theme.fg("dim", kind)} ${chips.join(" ")}`.trim(), 0, 0));
+	box.addChild(new Markdown(stripFirstHeading(content), 0, 0, getMarkdownTheme()));
+	return box;
+}
+
+function inferStaticKind(content: string): string {
+	const first = content.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "message";
+	const match = first.match(/^#\s+scrutiny\s+(\S+)/i) ?? first.match(/^#\s+pi-scrutiny/i);
+	if (!match) return "message";
+	return match[1]?.toLowerCase() ?? "help";
+}
+
+function stripFirstHeading(content: string): string {
+	return content.replace(/^#\s+[^\n]+\n?/, "").trim() || content;
+}
+
+function staticChips(kind: string): string[] {
+	switch (kind) {
+		case "help":
+		case "pi-scrutiny":
+			return ["6 surfaces", "inline", "no patch fusion"];
+		case "models":
+			return ["panel", "verify", "env override"];
+		case "runs":
+			return ["session", "artifacts"];
+		case "councils":
+			return ["presets", "lenses"];
+		case "config":
+			return ["global", "project", "env override"];
+		default:
+			return [];
+	}
+}
+
+function chip(theme: any, text: string, color: "accent" | "muted" | "success" | "warning" | "error"): string {
+	return theme.fg(color, `[${text}]`);
+}
+
+function progressPhase(progress: ScrutinyRunProgress): string {
+	if (progress.judge?.status === "running") return "map";
+	if (/verify/i.test(progress.message ?? "")) return "verify";
+	if (/done/i.test(progress.message ?? "")) return "done";
+	if (/failed|unusable|error/i.test(progress.message ?? "")) return "attention";
+	return progress.panel.length ? "panel" : "checks";
+}
+
+export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any): string[] {
+	if (progresses.length === 0) return [];
+	const lines = [`${theme.fg("accent", "◆")} ${theme.bold("scrutiny dock")} ${chip(theme, `${progresses.length} active`, "accent")} ${chip(theme, "esc cancels foreground run", "muted")}`];
+	for (const progress of progresses.slice(0, 4)) {
+		const ready = progress.panel.filter((item) => item.status === "ready").length;
+		const failed = progress.panel.filter((item) => item.status === "failed").length;
+		const running = progress.panel.filter((item) => item.status === "running").length;
+		const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
+		const chips = [chip(theme, progress.surface, "accent"), chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning")];
+		if (running) chips.push(chip(theme, `thinking ${running}`, "warning"));
+		if (failed) chips.push(chip(theme, `fail ${failed}`, "error"));
+		chips.push(chip(theme, progressPhase(progress), "muted"));
+		lines.push(`  ${theme.fg("warning", "◐")} ${chips.join(" ")} ${theme.fg("dim", shortRunId(progress.runId))}`);
+	}
+	if (progresses.length > 4) lines.push(`  ${theme.fg("dim", `+${progresses.length - 4} more active`)}`);
+	return lines;
+}
+
 function renderProgress(progress: ScrutinyRunProgress, theme: any): string {
+	const ready = progress.panel.filter((item) => item.status === "ready").length;
+	const failed = progress.panel.filter((item) => item.status === "failed").length;
+	const running = progress.panel.filter((item) => item.status === "running").length;
+	const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
+	const chips = [chip(theme, progress.surface, "accent"), chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning")];
+	if (running) chips.push(chip(theme, `thinking ${running}`, "warning"));
+	if (failed) chips.push(chip(theme, `fail ${failed}`, "error"));
+	chips.push(chip(theme, progressPhase(progress), "muted"));
 	const lines: string[] = [];
-	lines.push(`${theme.fg("accent", "◆")} ${theme.bold("scrutiny")} ${theme.fg("dim", progress.surface)} ${theme.fg("muted", progress.message ?? "running")}`);
+	lines.push(`${theme.fg("accent", "◐")} ${theme.bold("scrutiny")} ${chips.join(" ")}`);
 	for (const item of progress.panel) {
 		lines.push(`  ${statusIcon(item.status, theme)} ${theme.fg("toolOutput", item.model)} ${theme.fg("dim", item.role)}`);
 	}
@@ -76,7 +155,7 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	if (result.responses.length === 0 && !result.verify) {
 		lines.push(`  ${theme.fg("warning", "no panel models configured")}`);
 	} else if (result.responses.length > 0) {
-		lines.push(`  ${theme.fg("success", `${ok.length}/${result.responses.length} panel ready`)}${failed.length ? theme.fg("warning", ` · ${failed.length} failed`) : ""}${result.judge ? ` · ${result.judge.status === "ok" ? theme.fg("success", "explainer ready") : theme.fg("warning", "explainer failed")}` : theme.fg("dim", " · explainer skipped")}`);
+		lines.push(`  ${theme.fg("success", `${ok.length}/${result.responses.length} panel ready`)}${failed.length ? theme.fg("warning", ` · ${failed.length} failed`) : ""}${result.judge ? ` · ${result.judge.status === "ok" ? theme.fg("success", "evidence map ready") : theme.fg("warning", "evidence map failed")}` : theme.fg("dim", " · evidence map skipped")}`);
 	}
 	for (const response of result.responses) lines.push(panelLine(response, theme));
 	if (result.analysis?.disagreement_signal) lines.push(`  ${theme.fg("error", "⚠ disagreement")} ${theme.fg("dim", "stop signal — gather evidence or ask human, do not smooth")}`);
@@ -84,8 +163,19 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	if (result.analysis?.consensus?.length) lines.push(`  ${theme.fg("accent", "shared")} ${truncate(result.analysis.consensus[0] ?? "", 140).replace(/\n/g, " ")}`);
 	if (result.analysis?.risks?.length) lines.push(`  ${theme.fg("warning", "risk")} ${truncate(result.analysis.risks[0] ?? "", 140).replace(/\n/g, " ")}`);
 	if (result.verify) lines.push(`  ${theme.fg(result.verify.failed ? "error" : "success", "verify")} ${result.verify.passed} pass · ${result.verify.failed} fail · ${result.verify.skipped} skip`);
-	if (result.packetPath) lines.push(`  ${theme.fg("dim", result.packetPath)}`);
+	if (result.packetPath) {
+		lines.push(`  ${theme.fg("dim", `ctrl+o expand · result ${artifactPath(result.packetPath, "result.json")}`)}`);
+		lines.push(`  ${theme.fg("dim", `packet ${result.packetPath}`)}`);
+	}
 	return lines.join("\n");
+}
+
+function shortRunId(runId: string): string {
+	return runId.split("_").at(-1) ?? runId;
+}
+
+function artifactPath(packetPath: string, file: string): string {
+	return packetPath.replace(/packet\.md$/, file);
 }
 
 function panelLine(response: PanelResponse, theme: any): string {
@@ -99,7 +189,10 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 	lines.push(`# Scrutiny ${result.status}`);
 	lines.push(`surface: ${result.surface}  `);
 	lines.push(`duration: ${formatDuration(result.durationMs)}  `);
-	if (result.packetPath) lines.push(`packet: \`${result.packetPath}\``);
+	if (result.packetPath) {
+		lines.push(`result: \`${artifactPath(result.packetPath, "result.json")}\``);
+		lines.push(`packet: \`${result.packetPath}\``);
+	}
 	lines.push("");
 	if (result.analysis) {
 		lines.push("## Evidence map");

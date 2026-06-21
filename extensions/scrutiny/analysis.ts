@@ -36,7 +36,17 @@ export function detectMush(responses: PanelResponse[]): string | undefined {
 		return body.length < 40;
 	});
 	if (allHeadersOnly) return "all ok responses contain only template headings, no substance";
+	const allToolPreambles = ok.every((response) => isToolIntentPreamble(response.content));
+	if (allToolPreambles) return "all ok responses are tool-use preambles; panel likely ignored no-tools packet";
 	return undefined;
+}
+
+function isToolIntentPreamble(text: string): boolean {
+	const compact = text.trim().replace(/\s+/g, " ");
+	if (compact.length > 600) return false;
+	return /\b(i'?ll|i will|let me|need to|first,? i|i should)\b.{0,120}\b(inspect|read|open|check|look at|call|use|run|grep)\b.{0,120}\b(repo|files?|tools?|commands?|bash|grep|read|tests?)\b/i.test(compact)
+		|| /\bcalling\b.{0,80}\b(repo reads|tools?|read|grep|bash)\b/i.test(compact)
+		|| /\b(can'?t|cannot|don'?t)\b.{0,80}\b(access|inspect|read)\b.{0,80}\b(repo|files?)\b/i.test(compact);
 }
 
 export function buildDeterministicAnalysis(responses: PanelResponse[]): ScrutinyAnalysis {
@@ -81,7 +91,7 @@ export function formatScrutinyBrief(input: {
 	const lines: string[] = [];
 	lines.push(`# Scrutiny ${input.surface} result`);
 	lines.push(input.budgetLine);
-	lines.push(input.judgeRan ? "trade-off explainer: ran" : "trade-off explainer: skipped; main Pi model synthesizes");
+	lines.push(input.judgeRan ? "evidence map: trade-off explainer ran" : "evidence map: deterministic only; main Pi model synthesizes");
 	if (input.verify) lines.push(verifyLine(input.verify));
 	lines.push("");
 

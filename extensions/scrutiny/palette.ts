@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { SCRUTINY_SURFACES, SURFACE_DEFAULTS, loadCouncils, readEnvConfig } from "./config.js";
+import { SCRUTINY_SURFACES, SURFACE_DEFAULTS, readScrutinyConfig } from "./config.js";
 import { panelRoles } from "./packet.js";
 import type { Council, ScrutinyParams, ScrutinySurface } from "./types.js";
 import { formatTokens } from "./util.js";
@@ -32,8 +32,8 @@ type PaletteState = {
 };
 
 export async function showScrutinyPalette(ctx: ExtensionCommandContext, initialPrompt = ""): Promise<ScrutinyParams | null> {
-	const config = readEnvConfig();
-	const councils = loadCouncils();
+	const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+	const councils = config.councils;
 	const maxPanel = Math.max(0, Math.min(config.panel.length, config.maxPanelModels));
 	const initialSurface = inferPaletteSurface(initialPrompt);
 	const state: PaletteState = {
@@ -49,7 +49,7 @@ export async function showScrutinyPalette(ctx: ExtensionCommandContext, initialP
 	};
 
 	return ctx.ui.custom<ScrutinyParams | null>(
-		(tui, theme, _kb, done) => new ScrutinyPalette(tui, theme, config.panel.slice(0, config.maxPanelModels), councils, state, done),
+		(tui, theme, _kb, done) => new ScrutinyPalette(tui, theme, config.panel.slice(0, config.maxPanelModels), config.verifyChecks.map((check) => check.name).join(", ") || "none", councils, state, done),
 		{
 			overlay: true,
 			overlayOptions: {
@@ -70,6 +70,7 @@ class ScrutinyPalette implements Component, Focusable {
 		private readonly tui: TUI,
 		private readonly theme: Theme,
 		private readonly panelModels: string[],
+		private readonly verifyChecksLabel: string,
 		private readonly councils: Council[],
 		private readonly state: PaletteState,
 		private readonly done: (value: ScrutinyParams | null) => void,
@@ -199,8 +200,7 @@ class ScrutinyPalette implements Component, Focusable {
 			}
 		} else if (this.state.surface === "verify") {
 			lines.push(frameLine(`${ok("◆")} ${dim("objective arbiter · no panel · no judge")}`, w, this.theme));
-			const config = readEnvConfig();
-			lines.push(frameLine(`${dim("checks:")} ${accent(config.verifyChecks.map((c) => c.name).join(", ") || "none")}`, w, this.theme));
+			lines.push(frameLine(`${dim("checks:")} ${accent(this.verifyCheckNames())}`, w, this.theme));
 		} else {
 			lines.push(frameLine(`${accent("lenses")} ${dim("independent panel, not a vote; do not fuse patches")}`, w, this.theme));
 			const roles = panelRoles(this.panelModels.slice(0, this.state.panelCount), this.state.surface);
@@ -222,12 +222,12 @@ class ScrutinyPalette implements Component, Focusable {
 			for (const line of [
 				"enter run · esc cancel",
 				"tab/↓ surface · shift-tab/↑ previous surface",
-				"ctrl+j explainer · ctrl+g git diff · ctrl+p panel size · ctrl+v verify",
+				"ctrl+j evidence map · ctrl+g git diff · ctrl+p panel size · ctrl+v verify",
 				"ctrl+c council preset · ctrl+u clear · ctrl+w delete word · ? hide help",
 			]) lines.push(frameLine(dim(line), w, this.theme));
 		} else {
 			lines.push(midBorder(w, this.theme));
-			lines.push(frameLine(dim("enter run · esc cancel · tab surface · ^c council · ^j explainer · ^g git · ^p panel · ^v verify · ? help"), w, this.theme));
+			lines.push(frameLine(dim("enter run · esc cancel · tab surface · ^c council · ^j map · ^g git · ^p panel · ^v verify · ? help"), w, this.theme));
 		}
 		lines.push(bottomBorder(w, this.theme));
 		return lines;
@@ -248,7 +248,7 @@ class ScrutinyPalette implements Component, Focusable {
 		if (council) {
 			const chips = [chip(this.theme, `@${council.name}`, "accent"), chip(this.theme, council.surface, "muted")];
 			if (council.surface !== "verify") chips.push(chip(this.theme, `panel ${council.panelists.length}`, council.panelists.length ? "success" : "error"));
-			if (council.judgeMode) chips.push(chip(this.theme, `explainer:${council.judgeMode}`, council.judgeMode === "on" ? "warning" : "muted"));
+			if (council.judgeMode) chips.push(chip(this.theme, `map:${council.judgeMode}`, council.judgeMode === "on" ? "warning" : "muted"));
 			if (council.verify !== undefined) chips.push(chip(this.theme, `verify:${council.verify ? "on" : "off"}`, council.verify ? "warning" : "muted"));
 			chips.push(chip(this.theme, this.estimateChip(), "accent"));
 			return chips.join(" ");
@@ -256,7 +256,7 @@ class ScrutinyPalette implements Component, Focusable {
 		const chips = [chip(this.theme, this.state.surface, this.state.surfaceLocked ? "accent" : "muted")];
 		if (this.state.surface !== "verify") {
 			chips.push(chip(this.theme, `panel ${this.state.panelCount}/${this.panelModels.length}`, this.state.panelCount ? "success" : "error"));
-			chips.push(chip(this.theme, `explainer:${this.state.judgeMode}`, this.state.judgeMode === "on" ? "warning" : "muted"));
+			chips.push(chip(this.theme, `map:${this.state.judgeMode}`, this.state.judgeMode === "on" ? "warning" : "muted"));
 		}
 		chips.push(chip(this.theme, `git:${this.state.includeGitDiff ? "on" : "off"}`, this.state.includeGitDiff ? "warning" : "muted"));
 		if (this.state.surface !== "verify") chips.push(chip(this.theme, `verify:${this.state.verify ? "on" : "off"}`, this.state.verify ? "warning" : "muted"));
@@ -289,6 +289,10 @@ class ScrutinyPalette implements Component, Focusable {
 	private estimatedPacketTokens(): number {
 		const baseChars = this.state.prompt.length + 1_800 + (this.state.includeGitDiff ? 6_000 : 0);
 		return Math.max(1, Math.ceil(baseChars / 4));
+	}
+
+	private verifyCheckNames(): string {
+		return this.verifyChecksLabel;
 	}
 
 	private cycleSurface(delta: number): void {
