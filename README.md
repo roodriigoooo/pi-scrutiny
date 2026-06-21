@@ -85,6 +85,8 @@ pi -e ./extensions/scrutiny.ts
 /scrutiny ask compare these two implementation plans
 ```
 
+or open the palette (`/scrutiny`) and press **ctrl+c** to cycle through configured council presets — the surface, panelists, and lenses update to match the council.
+
 or let the main model call `scrutiny_consult` when the extra spend is worth it.
 
 ## flow
