@@ -5,6 +5,7 @@ import { SURFACE_DEFAULTS, readScrutinyConfig, resolveJudge, resolvePanel, resol
 import { buildTaskPacket, judgePrompt, panelPrompt, panelRoles } from "./packet.js";
 import { runModelTask } from "./runner.js";
 import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
+import { writeRunResult } from "./summary.js";
 import type { ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
 import { createRunId, formatDuration, formatTokens, scrutinyDataDir, parseAnalysisJson, safeMkdir, truncate } from "./util.js";
 
@@ -37,7 +38,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	if (process.env.PI_SCRUTINY_DEPTH) {
 		const result = emptyError({ runId, surface, startedAt, error: "nested scrutiny invocation blocked", failure_reason: "recursion_capped" });
 		safeMkdir(runDir);
-		await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
+		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
 		return { result, brief: "Scrutiny blocked: nested invocation." };
 	}
 
@@ -49,7 +50,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 
 	if (panelModels.length === 0) {
 		const result = emptyError({ runId, surface, startedAt, error: "No panel models configured. Set PI_SCRUTINY_PANEL or pass panel.", failure_reason: "missing_panel" });
-		await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
+		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
 		return { result, brief: result.error ?? "Scrutiny failed." };
 	}
 
@@ -113,7 +114,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 			endedAt,
 			durationMs: endedAt - startedAt,
 		};
-		await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
+		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
 		progress = { ...progress, status: "error", updatedAt: endedAt, message: "all panel models failed" };
 		emit(input, progress);
 		recordRunEnd(runId, { status: "error", endedAt, error: "all panel models failed" });
@@ -137,7 +138,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 			endedAt,
 			durationMs: endedAt - startedAt,
 		};
-		await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
+		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
 		progress = { ...progress, status: "error", updatedAt: endedAt, message: `panel outputs unusable: ${mush}` };
 		emit(input, progress);
 		recordRunEnd(runId, { status: "error", endedAt, error: `panel outputs unusable: ${mush}` });
@@ -195,7 +196,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		endedAt,
 		durationMs: endedAt - startedAt,
 	};
-	await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
+	await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
 	progress = { ...progress, status: "ok", updatedAt: endedAt, message: `done in ${formatDuration(result.durationMs)}` };
 	emit(input, progress);
 	recordRunEnd(runId, { status: "ok", endedAt });
@@ -252,7 +253,7 @@ async function runVerifyOnly(input: {
 		endedAt,
 		durationMs: endedAt - startedAt,
 	};
-	await fs.writeFile(path.join(runDir, "result.json"), JSON.stringify(result, null, 2), { encoding: "utf8", mode: 0o600 });
+	await writeRunResult({ cwd, runDir, result, prompt: params.prompt });
 	progress = { ...progress, status: "ok", updatedAt: endedAt, message: `verify: ${verify.passed} pass · ${verify.failed} fail · ${verify.skipped} skipped` };
 	emit({ onProgress }, progress);
 	recordRunEnd(runId, { status: "ok", endedAt });

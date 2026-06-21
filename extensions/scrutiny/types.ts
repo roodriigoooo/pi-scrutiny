@@ -70,6 +70,30 @@ export type ScrutinyRunResult = {
 	durationMs: number;
 };
 
+export type ScrutinySummary = {
+	runId: string;
+	surface: ScrutinySurface;
+	startedAt: number;
+	endedAt: number;
+	prompt: string;
+	status: "ok" | "error";
+	failure_reason?: ScrutinyRunResult["failure_reason"];
+	error?: string;
+	files: string[];
+	symbols: string[];
+	keywords: string[];
+	signals: string[];
+	risks: string[];
+	contradictions: string[];
+	missingContext: string[];
+	sourceRefs: string[];
+	fileHashes: Record<string, string>;
+	resultPath: string;
+	packetPath?: string;
+	responsesPath?: string;
+	verifyPath?: string;
+};
+
 export type VerifyCheck = {
 	name: string;
 	command: string;

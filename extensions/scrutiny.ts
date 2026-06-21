@@ -5,6 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { councilToParams, exampleConfigJson, projectConfigPath, readScrutinyConfig, userConfigPath } from "./scrutiny/config.js";
 import { runScrutiny } from "./scrutiny/engine.js";
+import { historyText } from "./scrutiny/history.js";
 import { activeProgresses, recentRuns } from "./scrutiny/registry.js";
 import { showScrutinyPalette } from "./scrutiny/palette.js";
 import type { ScrutinyParams, ScrutinySurface } from "./scrutiny/types.js";
@@ -86,7 +87,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("scrutiny", {
-		description: "Run or inspect Pi Scrutiny (usage: /scrutiny | help | models | runs | councils | config | <surface>: <prompt> | @<council>: <prompt> | ask <prompt>)",
+		description: "Run or inspect Pi Scrutiny (usage: /scrutiny | help | models | runs | history | councils | config | <surface>: <prompt> | @<council>: <prompt> | ask <prompt>)",
 		handler: async (args, ctx) => {
 			const runAndPublish = async (params: ScrutinyParams) => {
 				try {
@@ -126,6 +127,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (trimmed === "runs") {
 				pi.sendMessage({ customType: "scrutiny-result", content: runsText(), display: true, details: { kind: "runs" } });
+				return;
+			}
+			if (trimmed === "history" || trimmed.startsWith("history ")) {
+				const content = await historyText(ctx.cwd, trimmed.slice("history".length).trim());
+				pi.sendMessage({ customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
 				return;
 			}
 			if (trimmed === "councils") {
@@ -254,7 +260,9 @@ function helpText(): string {
 		"```text",
 		"/scrutiny                          # open palette",
 		"/scrutiny models",
-		"/scrutiny runs                     # recent runs + artifact paths",
+		"/scrutiny runs                     # recent runs this session",
+		"/scrutiny history [query]          # searchable on-disk run summaries",
+		"/scrutiny history open <runId|latest> [result|summary|packet|responses|verify]",
 		"/scrutiny councils                 # list named council presets",
 		"/scrutiny config                   # show config files + active settings",
 		"/scrutiny config edit [project]    # edit ~/.pi/agent/scrutiny.json or .pi/scrutiny.json",

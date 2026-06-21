@@ -22,7 +22,7 @@ export type EvalTask = {
 export type EvalExpectation = {
 	name: string;
 	/** Returns true if pass, false if fail; may throw to record an error. */
-	check: (ctx: { result?: ScrutinyResultJson; stdout: string }) => boolean;
+	check: (ctx: { result?: ScrutinyResultJson; stdout: string; runDir?: string }) => boolean;
 };
 
 /**

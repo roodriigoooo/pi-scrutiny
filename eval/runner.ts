@@ -36,7 +36,7 @@ export async function runTask(task: EvalTask, opts: RunOptions): Promise<EvalRun
 
 	const expectations = (task.expect ?? []).map((exp) => {
 		try {
-			return { name: exp.name, pass: Boolean(exp.check({ result, stdout })) };
+			return { name: exp.name, pass: Boolean(exp.check({ result, stdout, runDir })) };
 		} catch (error) {
 			return { name: exp.name, pass: false, error: error instanceof Error ? error.message : String(error) };
 		}
