@@ -1,5 +1,6 @@
 import type { ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./types.js";
 import { SURFACE_DEFAULTS } from "./config.js";
+import { buildContextScoutSection } from "./scout.js";
 import { truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
@@ -23,6 +24,9 @@ export async function buildTaskPacket(input: {
 	if (input.params.context?.trim()) {
 		sections.push("", `## User-supplied context`, truncate(input.params.context.trim(), 12_000));
 	}
+
+	const scout = await buildContextScoutSection({ params: input.params, surface: input.surface, cwd: input.cwd, exec: input.exec, signal: input.signal });
+	if (scout) sections.push("", scout);
 
 	const includeGitDiff = input.params.includeGitDiff ?? SURFACE_DEFAULTS[input.surface].includeGitDiff;
 	if (includeGitDiff) {
