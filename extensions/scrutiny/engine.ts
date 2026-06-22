@@ -11,6 +11,8 @@ import { createRunId, formatDuration, formatTokens, scrutinyDataDir, parseAnalys
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
 
+export const SCRUTINY_PACKET_PREVIEW_CANCELLED = "SCRUTINY_PACKET_PREVIEW_CANCELLED";
+
 type RunScrutinyInput = {
 	params: ScrutinyParams;
 	cwd: string;
@@ -18,6 +20,7 @@ type RunScrutinyInput = {
 	signal?: AbortSignal;
 	onProgress?: (progress: ScrutinyRunProgress) => void;
 	projectTrusted?: boolean;
+	confirmPacket?: (input: { runId: string; surface: ScrutinySurface; packet: string; panelCount: number; judgeRan: boolean; verifyRan: boolean }) => Promise<boolean>;
 };
 
 const PANEL_EXCERPT_CHARS = 2_400;
@@ -57,6 +60,13 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	recordRunStart({ runId, surface, status: "running", startedAt, runDir });
 
 	const packet = await buildTaskPacket({ params: input.params, surface, cwd: input.cwd, config, exec: input.exec, signal: input.signal });
+	if (input.confirmPacket) {
+		const confirmed = await input.confirmPacket({ runId, surface, packet, panelCount: panelMembers.length, judgeRan: runJudgeByPolicy && Boolean(judgeModel), verifyRan: runVerifyByPolicy });
+		if (!confirmed) {
+			await fs.rm(runDir, { recursive: true, force: true }).catch(() => undefined);
+			throw new Error(SCRUTINY_PACKET_PREVIEW_CANCELLED);
+		}
+	}
 	await fs.writeFile(packetPath, packet, { encoding: "utf8", mode: 0o600 });
 
 	const panel = panelRoles(panelMembers, surface);

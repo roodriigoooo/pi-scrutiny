@@ -4,8 +4,9 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { councilToParams, exampleConfigJson, projectConfigPath, readScrutinyConfig, userConfigPath } from "./scrutiny/config.js";
-import { runScrutiny } from "./scrutiny/engine.js";
+import { SCRUTINY_PACKET_PREVIEW_CANCELLED, runScrutiny } from "./scrutiny/engine.js";
 import { historyText, showHistoryPicker } from "./scrutiny/history.js";
+import { confirmPacketPreview } from "./scrutiny/preview.js";
 import { activeProgresses, recentRuns } from "./scrutiny/registry.js";
 import { showScrutinyPalette } from "./scrutiny/palette.js";
 import type { ScrutinyParams, ScrutinySurface } from "./scrutiny/types.js";
@@ -98,6 +99,7 @@ export default function (pi: ExtensionAPI) {
 						projectTrusted: ctx.isProjectTrusted(),
 						exec: (command, execArgs, options) => pi.exec(command, execArgs, options),
 						signal: ctx.signal,
+						confirmPacket: ctx.hasUI ? (preview) => confirmPacketPreview(ctx, preview) : undefined,
 						onProgress: (progress) => {
 							refreshScrutinyChrome(ctx, progress);
 						},
@@ -106,6 +108,10 @@ export default function (pi: ExtensionAPI) {
 					pi.sendMessage({ customType: "scrutiny-result", content: brief, display: true, details: result });
 				} catch (error) {
 					clearScrutinyChrome(ctx);
+					if (error instanceof Error && error.message === SCRUTINY_PACKET_PREVIEW_CANCELLED) {
+						ctx.ui.notify("scrutiny cancelled before panel spend", "info");
+						return;
+					}
 					ctx.ui.notify(`scrutiny failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 				}
 			};
