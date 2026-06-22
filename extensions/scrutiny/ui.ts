@@ -119,7 +119,8 @@ export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any
 		if (running) chips.push(chip(theme, `thinking ${running}`, "warning"));
 		if (failed) chips.push(chip(theme, `fail ${failed}`, "error"));
 		chips.push(chip(theme, progressPhase(progress), "muted"));
-		lines.push(`  ${theme.fg("warning", "◐")} ${chips.join(" ")} ${theme.fg("dim", shortRunId(progress.runId))}`);
+		const message = progress.message ? ` ${theme.fg("dim", "·")} ${theme.fg("muted", truncate(progress.message.replace(/\s+/g, " "), 92))}` : "";
+		lines.push(`  ${theme.fg("warning", "◐")} ${chips.join(" ")} ${theme.fg("dim", shortRunId(progress.runId))}${message}`);
 	}
 	if (progresses.length > 4) lines.push(`  ${theme.fg("dim", `+${progresses.length - 4} more active`)}`);
 	return lines;
@@ -136,6 +137,7 @@ function renderProgress(progress: ScrutinyRunProgress, theme: any): string {
 	chips.push(chip(theme, progressPhase(progress), "muted"));
 	const lines: string[] = [];
 	lines.push(`${theme.fg("accent", "◐")} ${theme.bold("scrutiny")} ${chips.join(" ")}`);
+	if (progress.message) lines.push(`  ${theme.fg("dim", truncate(progress.message.replace(/\s+/g, " "), 140))}`);
 	for (const item of progress.panel) {
 		lines.push(`  ${statusIcon(item.status, theme)} ${theme.fg("toolOutput", item.model)} ${theme.fg("dim", item.role)}`);
 	}
@@ -162,6 +164,8 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	if (result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 120).replace(/\n/g, " ")}`);
 	if (result.analysis?.consensus?.length) lines.push(`  ${theme.fg("accent", "shared")} ${truncate(result.analysis.consensus[0] ?? "", 140).replace(/\n/g, " ")}`);
 	if (result.analysis?.risks?.length) lines.push(`  ${theme.fg("warning", "risk")} ${truncate(result.analysis.risks[0] ?? "", 140).replace(/\n/g, " ")}`);
+	const context = contextStats(result);
+	if (context.hasContext) lines.push(`  ${theme.fg("accent", "context")} scout ${context.candidates} · memory ${context.memory} · gaps ${context.gaps}`);
 	if (result.verify) lines.push(`  ${theme.fg(result.verify.failed ? "error" : "success", "verify")} ${result.verify.passed} pass · ${result.verify.failed} fail · ${result.verify.skipped} skip`);
 	if (result.packetPath) {
 		lines.push(`  ${theme.fg("dim", `ctrl+o expand · result ${artifactPath(result.packetPath, "result.json")}`)}`);
@@ -213,6 +217,14 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 		if (result.analysis.confidence) lines.push(`confidence: ${result.analysis.confidence}`);
 		lines.push("");
 	}
+	const stats = contextStats(result);
+	if (stats.hasContext) {
+		lines.push("## Context footprint");
+		lines.push(`scout candidates: ${stats.candidates}  `);
+		lines.push(`related memory: ${stats.memory}  `);
+		lines.push(`missing-context signals: ${stats.gaps}`);
+		lines.push("");
+	}
 	lines.push("## Panel outputs");
 	for (const response of result.responses) {
 		lines.push(`### ${response.model} (${response.role})`);
@@ -234,6 +246,43 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 		}
 	}
 	return lines.join("\n");
+}
+
+function contextStats(result: ScrutinyRunResult): { hasContext: boolean; candidates: number; memory: number; gaps: number } {
+	const packet = result.packet ?? "";
+	const scout = /^## Context scout\b/m.test(packet);
+	const candidateLines = section(packet, "Context scout")
+		?.split(/\r?\n/)
+		.filter((line) => /^-\s+/.test(line.trim())) ?? [];
+	const memory = candidateLines.filter((line) => /\[prior;/i.test(line) || /\bscr_[a-z0-9]/i.test(line)).length;
+	const scoutGaps = /\b(skipped:|no local candidates found|ask user to choose scope|inspect scope manually)\b/i.test(packet) ? 1 : 0;
+	const missing = missingContextSignals(result);
+	return {
+		hasContext: scout || missing > 0,
+		candidates: candidateLines.length,
+		memory,
+		gaps: scoutGaps + missing,
+	};
+}
+
+function missingContextSignals(result: ScrutinyRunResult): number {
+	const lines = [
+		...(result.analysis?.blind_spots ?? []),
+		...result.responses.flatMap((response) => response.content.split(/\r?\n/)),
+	]
+		.map((line) => line.trim().replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, ""))
+		.filter((line) => line.length >= 20 && line.length <= 500)
+		.filter((line) => !/^Deterministic analysis does not infer/i.test(line))
+		.filter((line) => /\b(missing|not shown|not in (the )?packet|insufficient|unknown|cannot determine|can't determine|need(?:s)? to inspect|must inspect|would need|need more evidence|not enough evidence)\b/i.test(line));
+	return new Set(lines.map((line) => truncate(line, 240))).size;
+}
+
+function section(markdown: string, heading: string): string | undefined {
+	const lines = markdown.split(/\r?\n/);
+	const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+	if (start < 0) return undefined;
+	const next = lines.findIndex((line, index) => index > start && /^##\s+/.test(line));
+	return lines.slice(start + 1, next < 0 ? undefined : next).join("\n").trim();
 }
 
 function pushList(lines: string[], title: string, items: string[] | undefined): void {

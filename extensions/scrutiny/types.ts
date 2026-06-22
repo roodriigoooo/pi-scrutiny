@@ -91,6 +91,7 @@ export type ScrutinySummary = {
 	sourceRefs: string[];
 	fileHashes: Record<string, string>;
 	resultPath: string;
+	surfaceArtifactPath?: string;
 	packetPath?: string;
 	responsesPath?: string;
 	verifyPath?: string;

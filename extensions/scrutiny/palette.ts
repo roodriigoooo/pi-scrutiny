@@ -224,7 +224,7 @@ class ScrutinyPalette implements Component, Focusable {
 			for (const line of [
 				"enter run · esc cancel",
 				"tab/↓ surface · shift-tab/↑ previous surface",
-				"ctrl+j evidence map · ctrl+g git diff · ctrl+p panel size · ctrl+v verify",
+				"ctrl+j evidence map · ctrl+g git diff · ctrl+n panel size · ctrl+v verify",
 				"ctrl+p saved panel · ctrl+n panel size · ctrl+u clear · ctrl+w delete word · ? hide help",
 			]) lines.push(frameLine(dim(line), w, this.theme));
 		} else {

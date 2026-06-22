@@ -10,11 +10,50 @@ const MAX_HASH_BYTES = 8 * 1024 * 1024;
 
 export async function writeRunResult(input: { cwd: string; runDir: string; result: ScrutinyRunResult; prompt?: string }): Promise<void> {
 	await fs.writeFile(path.join(input.runDir, "result.json"), JSON.stringify(input.result, null, 2), { encoding: "utf8", mode: 0o600 });
+	await writeSurfaceArtifact(input).catch(() => undefined);
 	try {
 		await writeRunSummary(input);
 	} catch {
 		// Summary/index is best-effort. Never hide primary result.json write.
 	}
+}
+
+async function writeSurfaceArtifact(input: { runDir: string; result: ScrutinyRunResult }): Promise<void> {
+	const file = surfaceArtifactFile(input.result.surface);
+	if (!file) return;
+	const artifact = {
+		runId: input.result.runId,
+		surface: input.result.surface,
+		status: input.result.status,
+		failure_reason: input.result.failure_reason,
+		error: input.result.error,
+		packetPath: input.result.packetPath,
+		analysis: input.result.analysis,
+		panel: input.result.responses.map((response) => ({
+			model: response.model,
+			role: response.role,
+			status: response.status,
+			content: response.content,
+			error: response.error,
+			durationMs: response.durationMs,
+		})),
+		failed_models: input.result.failed_models,
+		verify: input.result.verify ? {
+			passed: input.result.verify.passed,
+			failed: input.result.verify.failed,
+			skipped: input.result.verify.skipped,
+			durationMs: input.result.verify.durationMs,
+		} : undefined,
+		startedAt: input.result.startedAt,
+		endedAt: input.result.endedAt,
+		durationMs: input.result.durationMs,
+	};
+	await fs.writeFile(path.join(input.runDir, file), JSON.stringify(artifact, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+function surfaceArtifactFile(surface: ScrutinyRunResult["surface"]): string | undefined {
+	if (surface === "verify") return undefined; // verify already writes verify.json.
+	return `${surface}.json`;
 }
 
 export async function writeRunSummary(input: { cwd: string; runDir: string; result: ScrutinyRunResult; prompt?: string }): Promise<ScrutinySummary> {
@@ -38,6 +77,8 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 	const fileHashes = await hashReferencedFiles(cwd, files);
 	const verifyPath = result.verify && await exists(path.join(runDir, "verify.json")) ? rel(cwd, path.join(runDir, "verify.json")) : undefined;
 	const responsesPath = await exists(path.join(runDir, "responses.json")) ? rel(cwd, path.join(runDir, "responses.json")) : undefined;
+	const surfaceArtifactName = surfaceArtifactFile(result.surface);
+	const surfaceArtifactPath = surfaceArtifactName && await exists(path.join(runDir, surfaceArtifactName)) ? rel(cwd, path.join(runDir, surfaceArtifactName)) : undefined;
 
 	return {
 		runId: result.runId,
@@ -58,6 +99,7 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 		sourceRefs,
 		fileHashes,
 		resultPath: rel(cwd, path.join(runDir, "result.json")),
+		surfaceArtifactPath,
 		packetPath: result.packetPath ? rel(cwd, result.packetPath) : undefined,
 		responsesPath,
 		verifyPath,

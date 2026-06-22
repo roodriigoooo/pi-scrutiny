@@ -133,7 +133,7 @@ the main pi agent synthesizes and acts on the evidence. the arbiter is objective
 - no auto-spend
 - trade-off explainer skipped except `consult` (or `judgeMode: on`)
 - `risks` and `verify` run objective repo checks
-- full outputs saved under `.pi/scrutiny/<run-id>/` (`packet.md`, `responses.json`, `verify.json`, `result.json`)
+- full outputs saved under `.pi/scrutiny/<run-id>/` (`packet.md`, `responses.json`, per-surface JSON, `verify.json`, `result.json`)
 
 ## status
 

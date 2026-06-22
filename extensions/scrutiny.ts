@@ -274,7 +274,7 @@ function helpText(): string {
 		"/scrutiny runs                     # recent runs this session",
 		"/scrutiny history                  # interactive run history search",
 		"/scrutiny history list [query]     # text history for scripts",
-		"/scrutiny history open <runId|latest> [result|summary|packet|responses|verify]",
+		"/scrutiny history open <runId|latest> [result|summary|surface|packet|responses|verify]",
 		"/scrutiny panels                   # list saved panel presets",
 		"/scrutiny config                   # show config files + active settings",
 		"/scrutiny config edit [project]    # edit ~/.pi/agent/scrutiny.json or .pi/scrutiny.json",

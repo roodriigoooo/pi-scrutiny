@@ -257,7 +257,7 @@ function renderHistory(input: { loaded: HistoryLoad; rows: HistoryRow[]; query: 
 		return lines.join("\n");
 	}
 	lines.push("", "filters: `file:`, `symbol:`, `surface:`, `status:`, `fresh:true|false`, `stale:true|false`, `since:`, `before:`, `limit:`");
-	lines.push("open: `/scrutiny history open <runId|latest> [result|summary|packet|responses|verify]`", "");
+	lines.push("open: `/scrutiny history open <runId|latest> [result|summary|surface|packet|responses|verify]`", "");
 	for (const row of input.rows) renderRow(lines, row);
 	return lines.join("\n");
 }
@@ -275,7 +275,7 @@ function renderRow(lines: string[], row: HistoryRow): void {
 	pushCompact(lines, "risks", summary.risks, 3);
 	pushCompact(lines, "missing", summary.missingContext, 3);
 	pushCompact(lines, "refs", summary.sourceRefs, 5);
-	const paths = [summary.resultPath, summary.packetPath, summary.responsesPath, summary.verifyPath].filter(Boolean).join(" · ");
+	const paths = [summary.resultPath, summary.surfaceArtifactPath, summary.packetPath, summary.responsesPath, summary.verifyPath].filter(Boolean).join(" · ");
 	if (paths) lines.push(`paths: ${paths}`);
 	lines.push("");
 }
@@ -285,7 +285,7 @@ function pushCompact(lines: string[], label: string, items: string[], limit: num
 	lines.push(`${label}: ${items.slice(0, limit).map((item) => truncate(item, 140)).join("; ")}${items.length > limit ? `; +${items.length - limit}` : ""}`);
 }
 
-type HistoryArtifact = "summary" | "result" | "packet" | "responses" | "verify";
+type HistoryArtifact = "summary" | "result" | "surface" | "packet" | "responses" | "verify";
 
 class HistoryPicker implements Component, Focusable {
 	focused = false;
@@ -415,12 +415,12 @@ class HistoryPicker implements Component, Focusable {
 		pushPreview(lines, this.theme, "signals", s.signals, 2);
 		pushPreview(lines, this.theme, "risks", s.risks, 2);
 		pushPreview(lines, this.theme, "missing", s.missingContext, 2);
-		pushPreview(lines, this.theme, "paths", [s.resultPath, s.packetPath, s.responsesPath, s.verifyPath].filter((item): item is string => Boolean(item)), 3);
+		pushPreview(lines, this.theme, "paths", [s.resultPath, s.surfaceArtifactPath, s.packetPath, s.responsesPath, s.verifyPath].filter((item): item is string => Boolean(item)), 3);
 		return lines;
 	}
 
 	private cycleArtifact(delta: number): void {
-		const artifacts: HistoryArtifact[] = ["summary", "result", "packet", "responses", "verify"];
+		const artifacts: HistoryArtifact[] = ["summary", "result", "surface", "packet", "responses", "verify"];
 		const index = artifacts.indexOf(this.artifact);
 		this.artifact = artifacts[(index + delta + artifacts.length) % artifacts.length]!;
 	}
@@ -495,7 +495,7 @@ function pushPreview(lines: string[], theme: Theme, label: string, items: string
 
 async function openArtifactText(cwd: string, args: string): Promise<string> {
 	const [runToken, artifactToken = "result"] = tokenize(args);
-	if (!runToken) return "# scrutiny history\n\nusage: `/scrutiny history open <runId|latest> [result|summary|packet|responses|verify]`";
+	if (!runToken) return "# scrutiny history\n\nusage: `/scrutiny history open <runId|latest> [result|summary|surface|packet|responses|verify]`";
 	const loaded = await loadHistory(cwd);
 	const matches = runToken === "latest"
 		? loaded.rows.slice(0, 1)
@@ -504,7 +504,7 @@ async function openArtifactText(cwd: string, args: string): Promise<string> {
 	if (matches.length > 1) return [`# scrutiny history`, "", `ambiguous run id: \`${runToken}\``, "", ...matches.slice(0, 10).map((row) => `- ${row.summary.runId} · ${row.summary.surface} · ${row.summary.prompt}`)].join("\n");
 	const summary = matches[0].summary;
 	const artifact = normalizeArtifact(artifactToken);
-	if (!artifact) return "# scrutiny history\n\nunknown artifact. use `result`, `summary`, `packet`, `responses`, or `verify`.";
+	if (!artifact) return "# scrutiny history\n\nunknown artifact. use `result`, `summary`, `surface`, `packet`, `responses`, or `verify`.";
 	return artifactTextForSummary(cwd, summary, artifact);
 }
 
@@ -520,13 +520,14 @@ async function artifactTextForSummary(cwd: string, summary: ScrutinySummary, art
 }
 
 function normalizeArtifact(token: string): HistoryArtifact | undefined {
-	if (["result", "summary", "packet", "responses", "verify"].includes(token)) return token as HistoryArtifact;
+	if (["result", "summary", "surface", "packet", "responses", "verify"].includes(token)) return token as HistoryArtifact;
 	return undefined;
 }
 
 function pathForArtifact(cwd: string, summary: ScrutinySummary, artifact: HistoryArtifact): string | undefined {
 	const runDir = path.join(scrutinyDataDir(cwd), summary.runId);
 	const relPath = artifact === "result" ? summary.resultPath
+		: artifact === "surface" ? summary.surfaceArtifactPath
 		: artifact === "packet" ? summary.packetPath
 		: artifact === "responses" ? summary.responsesPath
 		: artifact === "verify" ? summary.verifyPath

@@ -24,6 +24,7 @@ type RunScrutinyInput = {
 };
 
 const PANEL_EXCERPT_CHARS = 2_400;
+const PROGRESS_HEARTBEAT_MS = 1_000;
 
 export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: ScrutinyRunResult; brief: string }> {
 	const startedAt = Date.now();
@@ -84,26 +85,30 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	};
 	emit(input, progress);
 
-	const responses = await Promise.all(
-		panel.map(async (item, index) => {
-			progress = updatePanel(progress, index, { status: "running", startedAt: Date.now() });
-			emit(input, progress);
-			const response = await runModelTask({
-				model: item.model,
-				role: item.role,
-				prompt: panelPrompt({ packet, role: item.role, surface }),
-				cwd: input.cwd,
-				tools,
-				timeoutMs: config.panelTimeoutMs,
-				outputCharLimit: config.maxPanelOutputChars,
-				thinkingLevel: item.thinking,
-				signal: input.signal,
-			});
-			progress = updatePanel(progress, index, { status: response.status === "ok" ? "ready" : "failed", endedAt: Date.now() });
-			progress.message = panelProgressLine(responsesSoFar(progress));
-			emit(input, progress);
-			return response;
-		}),
+	const responses = await withProgressHeartbeat(
+		() => Promise.all(
+			panel.map(async (item, index) => {
+				progress = updatePanel(progress, index, { status: "running", startedAt: Date.now() });
+				progress.message = panelProgressLine(responsesSoFar(progress));
+				emit(input, progress);
+				const response = await runModelTask({
+					model: item.model,
+					role: item.role,
+					prompt: panelPrompt({ packet, role: item.role, surface }),
+					cwd: input.cwd,
+					tools,
+					timeoutMs: config.panelTimeoutMs,
+					outputCharLimit: config.maxPanelOutputChars,
+					thinkingLevel: item.thinking,
+					signal: input.signal,
+				});
+				progress = updatePanel(progress, index, { status: response.status === "ok" ? "ready" : "failed", endedAt: Date.now() });
+				progress.message = panelProgressLine(responsesSoFar(progress));
+				emit(input, progress);
+				return response;
+			}),
+		),
+		() => emit(input, progress),
 	);
 
 	await fs.writeFile(path.join(runDir, "responses.json"), JSON.stringify(responses, null, 2), { encoding: "utf8", mode: 0o600 });
@@ -164,17 +169,20 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	if (runJudge && judgeModel) {
 		progress = { ...progress, judge: { model: judgeModel, role: "trade-off explainer", status: "running", startedAt: Date.now() }, updatedAt: Date.now(), message: "trade-off explainer comparing panel evidence" };
 		emit(input, progress);
-		judge = await runModelTask({
-			model: judgeModel,
-			role: "trade-off explainer",
-			prompt: judgePrompt({ packet, responses: okResponses.map((response) => ({ model: response.model, role: response.role, content: response.content })) }),
-			cwd: input.cwd,
-			tools,
-			timeoutMs: config.judgeTimeoutMs,
-			outputCharLimit: config.maxJudgeOutputChars,
-			thinkingLevel: "off",
-			signal: input.signal,
-		});
+		judge = await withProgressHeartbeat(
+			() => runModelTask({
+				model: judgeModel,
+				role: "trade-off explainer",
+				prompt: judgePrompt({ packet, responses: okResponses.map((response) => ({ model: response.model, role: response.role, content: response.content })) }),
+				cwd: input.cwd,
+				tools,
+				timeoutMs: config.judgeTimeoutMs,
+				outputCharLimit: config.maxJudgeOutputChars,
+				thinkingLevel: "off",
+				signal: input.signal,
+			}),
+			() => emit(input, progress),
+		);
 		const judgeAnalysis = judge.status === "ok" ? parseAnalysisJson(judge.content) : undefined;
 		if (judgeAnalysis) analysis = mergeAnalysis(analysis, judgeAnalysis);
 		progress = { ...progress, judge: { model: judgeModel, role: "trade-off explainer", status: judgeAnalysis ? "ready" : "failed", endedAt: Date.now() }, updatedAt: Date.now(), message: judgeAnalysis ? "trade-off explainer ready" : "trade-off explainer failed; deterministic evidence map kept" };
@@ -185,7 +193,19 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	if (runVerifyByPolicy) {
 		progress = { ...progress, message: "running objective verify checks", updatedAt: Date.now() };
 		emit(input, progress);
-		verify = await runVerify({ cwd: input.cwd, exec: input.exec, config, signal: input.signal });
+		verify = await withProgressHeartbeat(
+			() => runVerify({
+				cwd: input.cwd,
+				exec: input.exec,
+				config,
+				signal: input.signal,
+				onCheckProgress: (event) => {
+					progress = { ...progress, message: verifyProgressMessage(event), updatedAt: Date.now() };
+					emit(input, progress);
+				},
+			}),
+			() => emit(input, progress),
+		);
 		await fs.writeFile(path.join(runDir, "verify.json"), JSON.stringify(verify, null, 2), { encoding: "utf8", mode: 0o600 });
 		progress = { ...progress, message: `verify: ${verify.passed} pass · ${verify.failed} fail · ${verify.skipped} skipped`, updatedAt: Date.now() };
 		emit(input, progress);
@@ -250,7 +270,19 @@ async function runVerifyOnly(input: {
 		message: "running objective verify checks",
 	};
 	emit({ onProgress }, progress);
-	const verify = await runVerify({ cwd, exec, config, signal });
+	const verify = await withProgressHeartbeat(
+		() => runVerify({
+			cwd,
+			exec,
+			config,
+			signal,
+			onCheckProgress: (event) => {
+				progress = { ...progress, message: verifyProgressMessage(event), updatedAt: Date.now() };
+				emit({ onProgress }, progress);
+			},
+		}),
+		() => emit({ onProgress }, progress),
+	);
 	await fs.writeFile(path.join(runDir, "verify.json"), JSON.stringify(verify, null, 2), { encoding: "utf8", mode: 0o600 });
 	const endedAt = Date.now();
 	const result: ScrutinyRunResult = {
@@ -273,21 +305,38 @@ async function runVerifyOnly(input: {
 	return { result, brief };
 }
 
-async function runVerify(input: { cwd: string; exec: ExecLike; config: import("./types.js").ScrutinyConfig; signal?: AbortSignal }): Promise<VerifyReport> {
+type VerifyProgressEvent = {
+	name: string;
+	index: number;
+	total: number;
+	status: "running" | "pass" | "fail" | "error";
+	durationMs?: number;
+};
+
+async function runVerify(input: { cwd: string; exec: ExecLike; config: import("./types.js").ScrutinyConfig; signal?: AbortSignal; onCheckProgress?: (event: VerifyProgressEvent) => void }): Promise<VerifyReport> {
 	const startedAt = Date.now();
 	const checks: VerifyCheck[] = [];
-	for (const spec of input.config.verifyChecks) {
+	const total = input.config.verifyChecks.length;
+	for (let index = 0; index < total; index++) {
+		const spec = input.config.verifyChecks[index]!;
 		const checkStart = Date.now();
+		input.onCheckProgress?.({ name: spec.name, index, total, status: "running" });
 		try {
 			const result = await input.exec(spec.command, spec.args ?? [], { timeout: spec.timeoutMs ?? input.config.verifyTimeoutMs, signal: input.signal });
 			const durationMs = Date.now() - checkStart;
 			const code = result.code ?? 0;
 			const output = `${result.stdout ?? ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
-			if (code === 0) checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "pass", exitCode: code, output: truncate(output, 4_000), durationMs });
-			else checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "fail", exitCode: code, output: truncate(output, 4_000), durationMs });
+			if (code === 0) {
+				checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "pass", exitCode: code, output: truncate(output, 4_000), durationMs });
+				input.onCheckProgress?.({ name: spec.name, index, total, status: "pass", durationMs });
+			} else {
+				checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "fail", exitCode: code, output: truncate(output, 4_000), durationMs });
+				input.onCheckProgress?.({ name: spec.name, index, total, status: "fail", durationMs });
+			}
 		} catch (error) {
 			const durationMs = Date.now() - checkStart;
 			checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "error", output: error instanceof Error ? error.message : String(error), durationMs });
+			input.onCheckProgress?.({ name: spec.name, index, total, status: "error", durationMs });
 		}
 	}
 	let diffStat: string | undefined;
@@ -301,6 +350,27 @@ async function runVerify(input: { cwd: string; exec: ExecLike; config: import(".
 	const failed = checks.filter((c) => c.status === "fail" || c.status === "error").length;
 	const skipped = checks.filter((c) => c.status === "skipped").length;
 	return { checks, diffStat, passed, failed, skipped, durationMs: Date.now() - startedAt };
+}
+
+async function withProgressHeartbeat<T>(work: () => Promise<T>, tick: () => void, intervalMs = PROGRESS_HEARTBEAT_MS): Promise<T> {
+	const timer = setInterval(() => {
+		try {
+			tick();
+		} catch {
+			// UI progress must never affect the underlying run.
+		}
+	}, intervalMs);
+	try {
+		return await work();
+	} finally {
+		clearInterval(timer);
+	}
+}
+
+function verifyProgressMessage(event: VerifyProgressEvent): string {
+	const pos = `${event.index + 1}/${event.total}`;
+	if (event.status === "running") return `verify ${pos}: ${event.name} running`;
+	return `verify ${pos}: ${event.name} ${event.status}${event.durationMs !== undefined ? ` in ${formatDuration(event.durationMs)}` : ""}`;
 }
 
 function resolveSurface(params: ScrutinyParams): ScrutinySurface {

@@ -43,6 +43,7 @@ function sharedInstructions(): string[] {
 		"- Answer independently. Do not assume other panelists will cover gaps.",
 		"- Prefer concrete, testable claims over vibes.",
 		"- Surface uncertainty and missing evidence.",
+		"- If the packet looks too narrow, name the missing surrounding files/systems/tests that must be inspected before trusting the result. Do not guess around missing context.",
 		"- You are running without tools unless the packet says otherwise. Do not say you will read files, call tools, or inspect the repo later; use only the packet and name missing evidence explicitly.",
 		"- Do not edit files. Do not propose a final patch to merge. This is deliberation, not the edit.",
 		"- Keep answer dense. No preamble.",
@@ -58,7 +59,7 @@ type SurfaceSpec = {
 const SURFACE_SPECS: Record<Exclude<ScrutinySurface, "verify">, SurfaceSpec> = {
 	consult: {
 		heading: "You are a Scrutiny panelist on a bounded research/synthesis question.",
-		panelHeadings: ["## Position", "## Evidence", "## Risks", "## Recommendation"],
+		panelHeadings: ["## Position", "## Evidence", "## Risks", "## Blind spots / missing evidence", "## Recommendation"],
 		trailer: ["Output is evidence for the main Pi agent to synthesize. It is not a patch."],
 	},
 	hypotheses: {
@@ -68,6 +69,7 @@ const SURFACE_SPECS: Record<Exclude<ScrutinySurface, "verify">, SurfaceSpec> = {
 			"## Confirming evidence per cause",
 			"## Minimal distinguishing test",
 			"## What would rule this cause out",
+			"## Missing context / needed inspection",
 		],
 		trailer: [
 			"Do not propose a fix. The main agent will run the best diagnostic, then act against the repo and tests.",
@@ -76,12 +78,12 @@ const SURFACE_SPECS: Record<Exclude<ScrutinySurface, "verify">, SurfaceSpec> = {
 	},
 	criteria: {
 		heading: "You are a Scrutiny panelist deriving acceptance criteria before any code is written.",
-		panelHeadings: ["## Acceptance criteria", "## Edge cases", "## Backward-compatibility risks", "## Migration concerns", "## Test cases"],
+		panelHeadings: ["## Acceptance criteria", "## Edge cases", "## Backward-compatibility risks", "## Migration concerns", "## Test cases", "## Missing context / needed inspection"],
 		trailer: ["The main agent will implement against the fused spec. Be concrete and testable."],
 	},
 	"repo-map": {
 		heading: "You are a Scrutiny panelist mapping the repo for an upcoming edit. Output context, not an answer.",
-		panelHeadings: ["## Relevant symbols", "## Call paths", "## Tests touched", "## Config / files", "## Invariants / prior patterns"],
+		panelHeadings: ["## Relevant symbols", "## Call paths", "## Tests touched", "## Config / files", "## Invariants / prior patterns", "## Missing context / needed inspection"],
 		trailer: [
 			"Output is a compact repo map. The main agent will edit with this context.",
 			"Prefer exact symbol names, file paths, and line references over prose.",
@@ -89,7 +91,7 @@ const SURFACE_SPECS: Record<Exclude<ScrutinySurface, "verify">, SurfaceSpec> = {
 	},
 	risks: {
 		heading: "You are a Scrutiny risk reviewer. You review one risk class only.",
-		panelHeadings: ["## Risk class", "## Findings", "## Severity", "## Suggested check or test"],
+		panelHeadings: ["## Risk class", "## Findings", "## Severity", "## Suggested check or test", "## Missing context / needed inspection"],
 		trailer: [
 			"Focus on your assigned risk class. Do not review other classes.",
 			"For Java/Spring/Kafka/WebFlux: watch race conditions, reactive-chain mistakes, retry/circuit-breaker semantics, idempotency, message ordering.",
