@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { Council, ScrutinyConfig, ScrutinyConfigSource, ScrutinyParams, ScrutinySurface, VerifyCheckSpec } from "./types.js";
+import type { Council, PanelMember, ScrutinyConfig, ScrutinyConfigSource, ScrutinyParams, ScrutinySurface, ThinkingLevel, VerifyCheckSpec } from "./types.js";
 
 const DEFAULT_MAX_PANEL_MODELS = 4;
 const DEFAULT_PANEL_TIMEOUT_MS = 60_000;
@@ -44,17 +44,20 @@ export function projectConfigPath(cwd: string): string {
 export function exampleConfigJson(): string {
 	return `${JSON.stringify(
 		{
-			panel: ["openai-codex/gpt-5.4-mini", "opencode-go/kimi-k2.7-code"],
+			panel: [
+				{ model: "openai-codex/gpt-5.4-mini", thinking: "low" },
+				{ model: "opencode-go/kimi-k2.7-code", thinking: "off" },
+			],
 			judge: "openai-codex/gpt-5.4-mini",
 			maxPanelModels: 4,
 			includeGitDiff: true,
 			verifyChecks: [{ name: "typecheck", command: "npm", args: ["run", "check"], timeoutMs: 60000 }],
-			councils: {
+			panels: {
 				"code-duo": {
 					surface: "risks",
-					panelists: [
-						{ model: "openai-codex/gpt-5.4-mini", lens: "concurrency" },
-						{ model: "opencode-go/kimi-k2.7-code", lens: "reactive-chain" },
+					members: [
+						{ model: "openai-codex/gpt-5.4-mini", lens: "concurrency", thinking: "low" },
+						{ model: "opencode-go/kimi-k2.7-code", lens: "reactive-chain", thinking: "off" },
 					],
 					verify: true,
 					judgeMode: "off",
@@ -101,16 +104,18 @@ export function readEnvConfig(): ScrutinyConfig {
 	return { ...config, configSources };
 }
 
-export function resolvePanel(input: { panel?: string[]; maxPanelModels?: number }, config: ScrutinyConfig): string[] {
-	const models = (input.panel && input.panel.length > 0 ? input.panel : config.panel)
-		.map((model) => model.trim())
-		.filter(Boolean);
-	const unique = [...new Set(models)];
-	return unique.slice(0, input.maxPanelModels ?? config.maxPanelModels);
+export function resolvePanel(input: { panel?: string[]; panelMembers?: PanelMember[]; maxPanelModels?: number }, config: ScrutinyConfig): PanelMember[] {
+	const members = input.panelMembers?.length ? input.panelMembers : input.panel?.length ? input.panel.map((model) => ({ model })) : config.panel;
+	const unique = new Map<string, PanelMember>();
+	for (const member of members) {
+		const model = member.model.trim();
+		if (model) unique.set(model, { ...member, model });
+	}
+	return [...unique.values()].slice(0, input.maxPanelModels ?? config.maxPanelModels);
 }
 
-export function resolveJudge(input: { judge?: string }, config: ScrutinyConfig, panel: string[]): string | undefined {
-	return input.judge?.trim() || config.judge || panel[0];
+export function resolveJudge(input: { judge?: string }, config: ScrutinyConfig, panel: PanelMember[]): string | undefined {
+	return input.judge?.trim() || config.judge || panel[0]?.model;
 }
 
 export function resolveTools(input: { tools?: string[] }, config: ScrutinyConfig): string[] {
@@ -129,7 +134,7 @@ export function councilToParams(council: Council, prompt: string): ScrutinyParam
 	return {
 		prompt,
 		surface: council.surface,
-		panel: council.panelists.map((p) => p.model),
+		panelMembers: council.panelists,
 		judge: council.judge,
 		judgeMode: council.judgeMode,
 		includeGitDiff: council.includeGitDiff,
@@ -172,7 +177,7 @@ function configFileSources(options: ScrutinyConfigOptions): ScrutinyConfigSource
 
 function readEnvPatch(): ConfigPatch {
 	const patch: ConfigPatch = {};
-	if ("PI_SCRUTINY_PANEL" in process.env) patch.panel = parseCsv(process.env.PI_SCRUTINY_PANEL);
+	if ("PI_SCRUTINY_PANEL" in process.env) patch.panel = parseCsv(process.env.PI_SCRUTINY_PANEL).map((model) => ({ model }));
 	if ("PI_SCRUTINY_JUDGE" in process.env) patch.judge = emptyToUndefined(process.env.PI_SCRUTINY_JUDGE);
 	if ("PI_SCRUTINY_MAX_PANEL_MODELS" in process.env) patch.maxPanelModels = parseIntEnv("PI_SCRUTINY_MAX_PANEL_MODELS", DEFAULT_MAX_PANEL_MODELS, 1, 8);
 	if ("PI_SCRUTINY_MAX_PANEL_OUTPUT_CHARS" in process.env) patch.maxPanelOutputChars = parseIntEnv("PI_SCRUTINY_MAX_PANEL_OUTPUT_CHARS", DEFAULT_PANEL_OUTPUT_CHARS, 2_000, 200_000);
@@ -185,6 +190,7 @@ function readEnvPatch(): ConfigPatch {
 	if ("PI_SCRUTINY_TOOLS" in process.env) patch.tools = parseCsv(process.env.PI_SCRUTINY_TOOLS);
 	if ("PI_SCRUTINY_VERIFY_CHECKS" in process.env) patch.verifyChecks = parseVerifyChecksJson(process.env.PI_SCRUTINY_VERIFY_CHECKS) ?? DEFAULT_VERIFY_CHECKS;
 	if ("PI_SCRUTINY_COUNCILS" in process.env) patch.councils = parseCouncilsJson(process.env.PI_SCRUTINY_COUNCILS) ?? [];
+	if ("PI_SCRUTINY_PANELS" in process.env) patch.councils = parseCouncilsJson(process.env.PI_SCRUTINY_PANELS) ?? [];
 	return patch;
 }
 
@@ -192,7 +198,7 @@ function parseConfigObject(value: unknown): ConfigPatch {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 	const input = value as Record<string, unknown>;
 	const patch: ConfigPatch = {};
-	const panel = parseStringList(input.panel);
+	const panel = parsePanelMembers(input.panel);
 	if (panel) patch.panel = panel;
 	const judge = parseString(input.judge);
 	if (judge !== undefined || "judge" in input) patch.judge = judge;
@@ -216,7 +222,7 @@ function parseConfigObject(value: unknown): ConfigPatch {
 	if (tools) patch.tools = tools;
 	const verifyChecks = parseVerifyChecksValue(input.verifyChecks);
 	if (verifyChecks) patch.verifyChecks = verifyChecks;
-	const councils = parseCouncilsValue(input.councils);
+	const councils = parseCouncilsValue(input.panels ?? input.councils);
 	if (councils) patch.councils = councils;
 	return patch;
 }
@@ -266,26 +272,35 @@ function parseCouncil(value: unknown): Council | undefined {
 	const name = parseString(input.name);
 	const surface = parseSurface(input.surface) ?? "consult";
 	if (!name) return undefined;
-	const panelists = parsePanelists(input.panelists ?? input.panel);
+	const thinking = parseThinkingLevel(input.thinking);
+	const panelists = parsePanelMembers(input.members ?? input.panelists ?? input.panel)
+		?.map((member) => ({ ...member, thinking: member.thinking ?? thinking })) ?? [];
 	const judge = parseString(input.judge);
 	const judgeMode = parseJudgeMode(input.judgeMode ?? input.judgePolicy);
 	const includeGitDiff = parseBoolValue(input.includeGitDiff);
 	const verify = parseVerifyPolicy(input.verify ?? input.verifyPolicy);
-	return { name, surface, panelists, judge, judgeMode, includeGitDiff, verify };
+	return { name, surface, panelists, thinking, judge, judgeMode, includeGitDiff, verify };
 }
 
-function parsePanelists(value: unknown): Council["panelists"] {
-	if (!Array.isArray(value)) return [];
-	return value
+function parsePanelMembers(value: unknown): PanelMember[] | undefined {
+	if (typeof value === "string") return parseCsv(value).map((model) => ({ model }));
+	if (!Array.isArray(value)) return undefined;
+	const members = value
 		.map((item) => {
 			if (typeof item === "string") return { model: item.trim() };
 			if (!item || typeof item !== "object") return undefined;
 			const input = item as Record<string, unknown>;
 			const model = parseString(input.model);
 			if (!model) return undefined;
-			return { model, lens: parseString(input.lens) };
+			const member: PanelMember = { model };
+			const lens = parseString(input.lens);
+			const thinking = parseThinkingLevel(input.thinking);
+			if (lens) member.lens = lens;
+			if (thinking) member.thinking = thinking;
+			return member;
 		})
-		.filter((item): item is Council["panelists"][number] => Boolean(item));
+		.filter((item): item is PanelMember => Boolean(item));
+	return members.length ? members : undefined;
 }
 
 function parseVerifyChecksJson(value: string | undefined): VerifyCheckSpec[] | undefined {
@@ -373,6 +388,12 @@ function parseSurface(value: unknown): ScrutinySurface | undefined {
 function parseJudgeMode(value: unknown): Council["judgeMode"] | undefined {
 	const mode = parseString(value);
 	if (mode === "auto" || mode === "off" || mode === "on") return mode;
+	return undefined;
+}
+
+function parseThinkingLevel(value: unknown): ThinkingLevel | undefined {
+	const level = parseString(value);
+	if (level === "off" || level === "minimal" || level === "low" || level === "medium" || level === "high" || level === "xhigh") return level;
 	return undefined;
 }
 

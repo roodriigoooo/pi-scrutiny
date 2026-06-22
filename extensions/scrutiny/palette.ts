@@ -3,7 +3,7 @@ import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { SCRUTINY_SURFACES, SURFACE_DEFAULTS, readScrutinyConfig } from "./config.js";
 import { panelRoles } from "./packet.js";
-import type { Council, ScrutinyParams, ScrutinySurface } from "./types.js";
+import type { Council, PanelMember, ScrutinyParams, ScrutinySurface } from "./types.js";
 import { formatTokens } from "./util.js";
 
 const JUDGE_MODES: Array<NonNullable<ScrutinyParams["judgeMode"]>> = ["auto", "off", "on"];
@@ -69,7 +69,7 @@ class ScrutinyPalette implements Component, Focusable {
 	constructor(
 		private readonly tui: TUI,
 		private readonly theme: Theme,
-		private readonly panelModels: string[],
+		private readonly panelMembers: PanelMember[],
 		private readonly verifyChecksLabel: string,
 		private readonly councils: Council[],
 		private readonly state: PaletteState,
@@ -86,7 +86,7 @@ class ScrutinyPalette implements Component, Focusable {
 				this.done({
 					prompt,
 					surface: council.surface,
-					panel: council.panelists.map((p) => p.model),
+					panelMembers: council.panelists,
 					judge: council.judge,
 					judgeMode: council.judgeMode,
 					includeGitDiff: council.includeGitDiff,
@@ -99,7 +99,7 @@ class ScrutinyPalette implements Component, Focusable {
 				prompt,
 				surface: this.state.surface,
 				judgeMode: this.state.judgeMode,
-				panel: this.state.surface === "verify" ? undefined : this.panelModels.slice(0, this.state.panelCount),
+				panelMembers: this.state.surface === "verify" ? undefined : this.panelMembers.slice(0, this.state.panelCount),
 				includeGitDiff: this.state.includeGitDiff,
 				verify: this.state.verify,
 			});
@@ -108,10 +108,6 @@ class ScrutinyPalette implements Component, Focusable {
 		if (matchesKey(data, Key.escape)) {
 			this.done(null);
 			return;
-		}
-		if (matchesKey(data, Key.ctrl("c")) && this.councils.length > 0) {
-			this.cycleCouncil();
-			return this.rerender();
 		}
 		if (matchesKey(data, Key.tab) || matchesKey(data, Key.down)) {
 			this.cycleSurface(1);
@@ -129,7 +125,11 @@ class ScrutinyPalette implements Component, Focusable {
 			this.state.includeGitDiff = !this.state.includeGitDiff;
 			return this.rerender();
 		}
-		if (matchesKey(data, Key.ctrl("p")) && this.state.surface !== "verify") {
+		if (matchesKey(data, Key.ctrl("p")) && this.councils.length > 0) {
+			this.cycleCouncil();
+			return this.rerender();
+		}
+		if (matchesKey(data, Key.ctrl("n")) && this.state.surface !== "verify") {
 			this.cyclePanelCount();
 			return this.rerender();
 		}
@@ -185,17 +185,18 @@ class ScrutinyPalette implements Component, Focusable {
 		lines.push(midBorder(w, this.theme));
 
 		if (council) {
-			lines.push(frameLine(`${ok("@protocol")} ${accent(council.name)} ${dim("council preset")}`, w, this.theme));
+			lines.push(frameLine(`${ok("@panel")} ${accent(council.name)} ${dim("saved panel")}`, w, this.theme));
 			if (council.surface === "verify") {
 				lines.push(frameLine(`${ok("◆")} ${dim("objective arbiter · no panel · no judge")}`, w, this.theme));
 			} else if (council.panelists.length === 0) {
-				lines.push(frameLine(`${this.theme.fg("error", "×")} council has no panelists ${dim("fix PI_SCRUTINY_COUNCILS")}`, w, this.theme));
+				lines.push(frameLine(`${this.theme.fg("error", "×")} saved panel has no members ${dim("fix panels config")}`, w, this.theme));
 			} else {
 				lines.push(frameLine(`${accent("lenses")} ${dim("independent panel, not a vote; do not fuse patches")}`, w, this.theme));
 				for (const [index, p] of council.panelists.entries()) {
 					const icon = index === 0 ? ok("●") : accent("●");
-					const lens = p.lens ?? panelRoles([p.model], council.surface)[0]?.role ?? "panelist";
-					lines.push(frameLine(` ${icon} ${padRight(shortModel(p.model), 24)} ${dim(lens)}`, w, this.theme));
+					const lens = p.lens ?? panelRoles([p], council.surface)[0]?.role ?? "panelist";
+					const thinking = p.thinking ? ` ${this.theme.fg("muted", `think:${p.thinking}`)}` : "";
+					lines.push(frameLine(` ${icon} ${padRight(shortModel(p.model), 24)} ${dim(lens)}${thinking}`, w, this.theme));
 			}
 			}
 		} else if (this.state.surface === "verify") {
@@ -203,13 +204,14 @@ class ScrutinyPalette implements Component, Focusable {
 			lines.push(frameLine(`${dim("checks:")} ${accent(this.verifyCheckNames())}`, w, this.theme));
 		} else {
 			lines.push(frameLine(`${accent("lenses")} ${dim("independent panel, not a vote; do not fuse patches")}`, w, this.theme));
-			const roles = panelRoles(this.panelModels.slice(0, this.state.panelCount), this.state.surface);
+			const roles = panelRoles(this.panelMembers.slice(0, this.state.panelCount), this.state.surface);
 			if (roles.length === 0) {
 				lines.push(frameLine(`${this.theme.fg("error", "×")} panel missing ${dim("set PI_SCRUTINY_PANEL=provider/model,provider/model")}`, w, this.theme));
 			} else {
 				for (const [index, item] of roles.entries()) {
 					const icon = index === 0 ? ok("●") : accent("●");
-					lines.push(frameLine(` ${icon} ${padRight(shortModel(item.model), 24)} ${dim(item.role)}`, w, this.theme));
+					const thinking = item.thinking ? ` ${this.theme.fg("muted", `think:${item.thinking}`)}` : "";
+					lines.push(frameLine(` ${icon} ${padRight(shortModel(item.model), 24)} ${dim(item.role)}${thinking}`, w, this.theme));
 				}
 			}
 		}
@@ -223,11 +225,11 @@ class ScrutinyPalette implements Component, Focusable {
 				"enter run · esc cancel",
 				"tab/↓ surface · shift-tab/↑ previous surface",
 				"ctrl+j evidence map · ctrl+g git diff · ctrl+p panel size · ctrl+v verify",
-				"ctrl+c council preset · ctrl+u clear · ctrl+w delete word · ? hide help",
+				"ctrl+p saved panel · ctrl+n panel size · ctrl+u clear · ctrl+w delete word · ? hide help",
 			]) lines.push(frameLine(dim(line), w, this.theme));
 		} else {
 			lines.push(midBorder(w, this.theme));
-			lines.push(frameLine(dim("enter run · esc cancel · tab surface · ^c council · ^j map · ^g git · ^p panel · ^v verify · ? help"), w, this.theme));
+			lines.push(frameLine(dim("enter run · esc cancel · tab surface · ^p saved panel · ^n panel size · ^j map · ^g git · ^v verify · ? help"), w, this.theme));
 		}
 		lines.push(bottomBorder(w, this.theme));
 		return lines;
@@ -247,7 +249,7 @@ class ScrutinyPalette implements Component, Focusable {
 		const council = this.activeCouncil();
 		if (council) {
 			const chips = [chip(this.theme, `@${council.name}`, "accent"), chip(this.theme, council.surface, "muted")];
-			if (council.surface !== "verify") chips.push(chip(this.theme, `panel ${council.panelists.length}`, council.panelists.length ? "success" : "error"));
+			if (council.surface !== "verify") chips.push(chip(this.theme, `members ${council.panelists.length}`, council.panelists.length ? "success" : "error"));
 			if (council.judgeMode) chips.push(chip(this.theme, `map:${council.judgeMode}`, council.judgeMode === "on" ? "warning" : "muted"));
 			if (council.verify !== undefined) chips.push(chip(this.theme, `verify:${council.verify ? "on" : "off"}`, council.verify ? "warning" : "muted"));
 			chips.push(chip(this.theme, this.estimateChip(), "accent"));
@@ -255,13 +257,13 @@ class ScrutinyPalette implements Component, Focusable {
 		}
 		const chips = [chip(this.theme, this.state.surface, this.state.surfaceLocked ? "accent" : "muted")];
 		if (this.state.surface !== "verify") {
-			chips.push(chip(this.theme, `panel ${this.state.panelCount}/${this.panelModels.length}`, this.state.panelCount ? "success" : "error"));
+			chips.push(chip(this.theme, `panel ${this.state.panelCount}/${this.panelMembers.length}`, this.state.panelCount ? "success" : "error"));
 			chips.push(chip(this.theme, `map:${this.state.judgeMode}`, this.state.judgeMode === "on" ? "warning" : "muted"));
 		}
 		chips.push(chip(this.theme, `git:${this.state.includeGitDiff ? "on" : "off"}`, this.state.includeGitDiff ? "warning" : "muted"));
 		if (this.state.surface !== "verify") chips.push(chip(this.theme, `verify:${this.state.verify ? "on" : "off"}`, this.state.verify ? "warning" : "muted"));
 		chips.push(chip(this.theme, this.estimateChip(), "accent"));
-		if (this.councils.length > 0) chips.push(chip(this.theme, "^c council", "muted"));
+		if (this.councils.length > 0) chips.push(chip(this.theme, "^p saved", "muted"));
 		return chips.join(" ");
 	}
 
@@ -321,7 +323,7 @@ class ScrutinyPalette implements Component, Focusable {
 		if (this.state.surface === "verify") {
 			this.state.panelCount = 0;
 		} else {
-			const maxPanel = Math.max(1, this.panelModels.length);
+			const maxPanel = Math.max(1, this.panelMembers.length);
 			this.state.panelCount = Math.min(defaults.panelCount, maxPanel);
 		}
 	}
@@ -332,8 +334,8 @@ class ScrutinyPalette implements Component, Focusable {
 	}
 
 	private cyclePanelCount(): void {
-		if (this.panelModels.length === 0) return;
-		this.state.panelCount = (this.state.panelCount % this.panelModels.length) + 1;
+		if (this.panelMembers.length === 0) return;
+		this.state.panelCount = (this.state.panelCount % this.panelMembers.length) + 1;
 	}
 
 	private syncInferredSurface(): void {

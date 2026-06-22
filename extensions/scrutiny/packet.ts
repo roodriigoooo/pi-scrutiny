@@ -1,4 +1,4 @@
-import type { ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./types.js";
+import type { PanelMember, ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./types.js";
 import { SURFACE_DEFAULTS } from "./config.js";
 import { buildContextScoutSection } from "./scout.js";
 import { truncate } from "./util.js";
@@ -151,10 +151,10 @@ const SURFACE_LENSES: Record<Exclude<ScrutinySurface, "verify">, LensSet> = {
 	risks: ["concurrency reviewer", "reactive-chain reviewer", "api-compatibility reviewer", "security reviewer", "performance reviewer", "data-migration reviewer", "null/error-handling reviewer", "flaky-test reviewer"],
 };
 
-export function panelRoles(models: string[], surface: ScrutinySurface): Array<{ model: string; role: string }> {
+export function panelRoles(members: PanelMember[], surface: ScrutinySurface): Array<{ model: string; role: string; thinking?: PanelMember["thinking"] }> {
 	if (surface === "verify") return [];
 	const lenses = SURFACE_LENSES[surface];
-	return models.map((model, index) => ({ model, role: lenses[index] ?? `panelist-${index + 1}` }));
+	return members.map((member, index) => ({ model: member.model, role: member.lens ?? lenses[index] ?? `panelist-${index + 1}`, thinking: member.thinking }));
 }
 
 async function readGitContext(exec: ExecLike, cwd: string, diffCharLimit: number, signal?: AbortSignal): Promise<string | undefined> {

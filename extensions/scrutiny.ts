@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { councilToParams, exampleConfigJson, projectConfigPath, readScrutinyConfig, userConfigPath } from "./scrutiny/config.js";
 import { runScrutiny } from "./scrutiny/engine.js";
-import { historyText } from "./scrutiny/history.js";
+import { historyText, showHistoryPicker } from "./scrutiny/history.js";
 import { activeProgresses, recentRuns } from "./scrutiny/registry.js";
 import { showScrutinyPalette } from "./scrutiny/palette.js";
 import type { ScrutinyParams, ScrutinySurface } from "./scrutiny/types.js";
@@ -87,7 +87,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("scrutiny", {
-		description: "Run or inspect Pi Scrutiny (usage: /scrutiny | help | models | runs | history | councils | config | <surface>: <prompt> | @<council>: <prompt> | ask <prompt>)",
+		description: "Run or inspect Pi Scrutiny (usage: /scrutiny | help | models | runs | history | panels | config | <surface>: <prompt> | @<panel>: <prompt> | ask <prompt>)",
 		handler: async (args, ctx) => {
 			const runAndPublish = async (params: ScrutinyParams) => {
 				try {
@@ -129,14 +129,19 @@ export default function (pi: ExtensionAPI) {
 				pi.sendMessage({ customType: "scrutiny-result", content: runsText(), display: true, details: { kind: "runs" } });
 				return;
 			}
-			if (trimmed === "history" || trimmed.startsWith("history ")) {
+			if (trimmed === "history") {
+				const content = ctx.hasUI ? await showHistoryPicker(ctx) : await historyText(ctx.cwd, "");
+				if (content) pi.sendMessage({ customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
+				return;
+			}
+			if (trimmed.startsWith("history ")) {
 				const content = await historyText(ctx.cwd, trimmed.slice("history".length).trim());
 				pi.sendMessage({ customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
 				return;
 			}
-			if (trimmed === "councils") {
+			if (trimmed === "panels" || trimmed === "councils") {
 				const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-				pi.sendMessage({ customType: "scrutiny-result", content: councilsText(config), display: true, details: { kind: "councils" } });
+				pi.sendMessage({ customType: "scrutiny-result", content: panelsText(config), display: true, details: { kind: "panels" } });
 				return;
 			}
 			if (trimmed === "config" || trimmed.startsWith("config ")) {
@@ -226,8 +231,8 @@ function configText(config: ReturnType<typeof readScrutinyConfig>): string {
 		...(sourceRows.length ? sourceRows : ["- env: no PI_SCRUTINY_* overrides"]),
 		"",
 		"## active",
-		`- panel: ${config.panel.length ? config.panel.join(", ") : "not configured"}`,
-		`- councils: ${config.councils.length}`,
+		`- panel: ${config.panel.length ? config.panel.map(formatPanelMember).join(", ") : "not configured"}`,
+		`- saved panels: ${config.councils.length}`,
 		`- trade-off explainer: ${config.judge ?? "first panel model"}`,
 		`- max panel: ${config.maxPanelModels}`,
 		`- tools: ${config.tools.length ? config.tools.join(", ") : "none"}`,
@@ -261,13 +266,14 @@ function helpText(): string {
 		"/scrutiny                          # open palette",
 		"/scrutiny models",
 		"/scrutiny runs                     # recent runs this session",
-		"/scrutiny history [query]          # searchable on-disk run summaries",
+		"/scrutiny history                  # interactive run history search",
+		"/scrutiny history list [query]     # text history for scripts",
 		"/scrutiny history open <runId|latest> [result|summary|packet|responses|verify]",
-		"/scrutiny councils                 # list named council presets",
+		"/scrutiny panels                   # list saved panel presets",
 		"/scrutiny config                   # show config files + active settings",
 		"/scrutiny config edit [project]    # edit ~/.pi/agent/scrutiny.json or .pi/scrutiny.json",
 		"/scrutiny verify:                  # run objective checks now",
-		"/scrutiny @code-duo: review this patch   # run a named council",
+		"/scrutiny @code-duo: review this patch   # run a saved panel",
 		"/scrutiny risks: review this webflux retry patch",
 		"/scrutiny hypotheses: intermittent offset commit on kafka consumer",
 		"/scrutiny ask compare these two implementation plans",
@@ -281,7 +287,7 @@ function modelsText(config: ReturnType<typeof readScrutinyConfig>): string {
 	return [
 		"# scrutiny models",
 		"",
-		`panel: ${config.panel.length ? config.panel.join(", ") : "not configured"}`,
+		`panel: ${config.panel.length ? config.panel.map(formatPanelMember).join(", ") : "not configured"}`,
 		`trade-off explainer: ${config.judge ?? "first panel model"}`,
 		`max panel: ${config.maxPanelModels}`,
 		`tools: ${config.tools.length ? config.tools.join(", ") : "none"}`,
@@ -303,12 +309,16 @@ function runsText(): string {
 	return ["# scrutiny runs", "", ...rows, "", "artifacts (packet/responses/verify/result.json) live under each run dir."].join("\n");
 }
 
-function councilsText(config: ReturnType<typeof readScrutinyConfig>): string {
-	const councils = config.councils;
-	if (councils.length === 0) return "# scrutiny councils\n\nno councils configured. run `/scrutiny config edit` and add a `councils` object.";
-	const rows = councils.map((c) => {
-		const panelists = c.panelists.map((p) => `${p.model}${p.lens ? ` (${p.lens})` : ""}`).join(", ");
-		return `- @${c.name} · ${c.surface} · ${panelists || "no panel"}${c.judgeMode ? ` · explainer:${c.judgeMode}` : ""}${c.verify ? " · verify:on" : ""}`;
+function panelsText(config: ReturnType<typeof readScrutinyConfig>): string {
+	const panels = config.councils;
+	if (panels.length === 0) return "# scrutiny saved panels\n\nno saved panels configured. run `/scrutiny config edit` and add a `panels` object.";
+	const rows = panels.map((c) => {
+		const members = c.panelists.map(formatPanelMember).join(", ");
+		return `- @${c.name} · ${c.surface} · ${members || "no members"}${c.judgeMode ? ` · map:${c.judgeMode}` : ""}${c.verify ? " · verify:on" : ""}`;
 	});
-	return ["# scrutiny councils", "", ...rows, "", "use: `/scrutiny @<name>: <prompt>`"].join("\n");
+	return ["# scrutiny saved panels", "", ...rows, "", "use: `/scrutiny @<name>: <prompt>`"].join("\n");
+}
+
+function formatPanelMember(member: { model: string; lens?: string; thinking?: string }): string {
+	return `${member.model}${member.lens ? ` (${member.lens})` : ""}${member.thinking ? ` think:${member.thinking}` : ""}`;
 }

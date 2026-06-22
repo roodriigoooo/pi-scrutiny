@@ -61,15 +61,18 @@ example `scrutiny.json`:
 
 ```json
 {
-  "panel": ["openai-codex/gpt-5.4-mini", "opencode-go/kimi-k2.7-code"],
+  "panel": [
+    { "model": "openai-codex/gpt-5.4-mini", "thinking": "low" },
+    { "model": "opencode-go/kimi-k2.7-code", "thinking": "off" }
+  ],
   "judge": "openai-codex/gpt-5.4-mini",
   "verifyChecks": [{ "name": "typecheck", "command": "npm", "args": ["run", "check"] }],
-  "councils": {
+  "panels": {
     "code-duo": {
       "surface": "risks",
-      "panelists": [
-        { "model": "openai-codex/gpt-5.4-mini", "lens": "concurrency" },
-        { "model": "opencode-go/kimi-k2.7-code", "lens": "reactive-chain" }
+      "members": [
+        { "model": "openai-codex/gpt-5.4-mini", "lens": "concurrency", "thinking": "low" },
+        { "model": "opencode-go/kimi-k2.7-code", "lens": "reactive-chain", "thinking": "off" }
       ],
       "verify": true,
       "judgeMode": "off"
@@ -78,7 +81,7 @@ example `scrutiny.json`:
 }
 ```
 
-`PI_SCRUTINY_*` env vars still work and override config files for shell-specific experiments.
+`councils`/`panelists` still work as old aliases for `panels`/`members`. `PI_SCRUTINY_*` env vars still work and override config files for shell-specific experiments.
 
 install locally:
 
@@ -98,18 +101,20 @@ pi -e ./extensions/scrutiny.ts
 /scrutiny                                    # open palette (surface-first)
 /scrutiny models
 /scrutiny runs                               # recent runs + artifact paths (this session)
-/scrutiny councils                           # list named council presets
+/scrutiny history                            # interactive searchable artifact history
+/scrutiny history list retry                 # text history for scripts
+/scrutiny panels                             # list saved panel presets
 /scrutiny config                             # show active config + sources
 /scrutiny config edit                        # edit global config in pi
 /scrutiny verify:                            # run objective checks now
-/scrutiny @code-duo: review this patch       # run a named council
+/scrutiny @code-duo: review this patch       # run a saved panel
 /scrutiny risks: review this webflux retry patch
 /scrutiny hypotheses: intermittent offset commit on kafka consumer
 /scrutiny criteria: migrate orders service to new idempotency key
 /scrutiny ask compare these two implementation plans
 ```
 
-or open the palette (`/scrutiny`) and press **ctrl+c** to cycle through configured council presets — the surface, panelists, and lenses update to match the council.
+or open the palette (`/scrutiny`) and press **ctrl+p** to cycle through configured saved panels — the surface, members, lenses, and optional thinking levels update to match the saved panel.
 
 or let the main model call `scrutiny_consult` when the extra spend is worth it.
 
@@ -117,7 +122,7 @@ or let the main model call `scrutiny_consult` when the extra spend is worth it.
 
 surfaces run **inline** and stream a compact status footer plus an active-run dock while the panel works — these show elapsed time, ready/thinking/failed counts, and current phase (panel / evidence map / verify). press **esc** to cancel a foreground run (native pi abort, propagated to panel subprocesses). deliberation can take time; that is expected and deliberate. flow protection here means legibility — surfaces are well-understood, reachable, and show what is happening — not minimal latency.
 
-run tracking: a lightweight in-memory registry records each run (run-id, surface, status, runDir). `/scrutiny runs` lists recent runs with their artifact paths so you can inspect what happened. full outputs persist on disk under `.pi/scrutiny/<run-id>/` regardless of the registry.
+run tracking: a lightweight in-memory registry records each run (run-id, surface, status, runDir). `/scrutiny runs` lists recent in-session runs. `/scrutiny history` opens searchable artifact history backed by `.pi/scrutiny/index.jsonl`; full outputs persist on disk under `.pi/scrutiny/<run-id>/` regardless of the registry.
 
 the main pi agent synthesizes and acts on the evidence. the arbiter is objective repo tools + human review, never an llm judge.
 

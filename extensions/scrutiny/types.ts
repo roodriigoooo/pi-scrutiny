@@ -1,5 +1,6 @@
 export type ScrutinySurface = "consult" | "hypotheses" | "criteria" | "repo-map" | "risks" | "verify";
 export type ScrutinyStatus = "pending" | "running" | "ready" | "failed";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type ScrutinyUsage = {
 	input: number;
@@ -14,6 +15,7 @@ export type ScrutinyUsage = {
 export type PanelSpec = {
 	model: string;
 	role: string;
+	thinking?: ThinkingLevel;
 	status: ScrutinyStatus;
 	startedAt?: number;
 	endedAt?: number;
@@ -120,7 +122,7 @@ export type ScrutinyConfigSource = {
 };
 
 export type ScrutinyConfig = {
-	panel: string[];
+	panel: PanelMember[];
 	judge?: string;
 	maxPanelModels: number;
 	maxPanelOutputChars: number;
@@ -143,15 +145,19 @@ export type VerifyCheckSpec = {
 	timeoutMs?: number;
 };
 
-export type CouncilPanelist = {
+export type PanelMember = {
 	model: string;
 	lens?: string;
+	thinking?: ThinkingLevel;
 };
+
+export type CouncilPanelist = PanelMember;
 
 export type Council = {
 	name: string;
 	surface: ScrutinySurface;
-	panelists: CouncilPanelist[];
+	panelists: PanelMember[];
+	thinking?: ThinkingLevel;
 	judge?: string;
 	judgeMode?: "auto" | "off" | "on";
 	includeGitDiff?: boolean;
@@ -163,6 +169,7 @@ export type ScrutinyParams = {
 	context?: string;
 	surface?: ScrutinySurface;
 	panel?: string[];
+	panelMembers?: PanelMember[];
 	judge?: string;
 	judgeMode?: "auto" | "off" | "on";
 	maxPanelModels?: number;

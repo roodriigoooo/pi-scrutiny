@@ -27,9 +27,9 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	const runId = createRunId();
 	const config = readScrutinyConfig({ cwd: input.cwd, projectTrusted: input.projectTrusted });
 	const surface: ScrutinySurface = resolveSurface(input.params);
-	const panelModels = surface === "verify" ? [] : resolvePanel(input.params, config);
+	const panelMembers = surface === "verify" ? [] : resolvePanel(input.params, config);
 	const tools = resolveTools(input.params, config);
-	const judgeModel = resolveJudge(input.params, config, panelModels);
+	const judgeModel = resolveJudge(input.params, config, panelMembers);
 	const runJudgeByPolicy = shouldRunJudge(surface, input.params.judgeMode);
 	const runVerifyByPolicy = shouldRunVerify(surface, input.params.verify);
 	const runDir = path.join(scrutinyDataDir(input.cwd), runId);
@@ -48,7 +48,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		return runVerifyOnly({ runId, surface, cwd: input.cwd, exec: input.exec, config, runDir, startedAt, signal: input.signal, onProgress: input.onProgress, params: input.params });
 	}
 
-	if (panelModels.length === 0) {
+	if (panelMembers.length === 0) {
 		const result = emptyError({ runId, surface, startedAt, error: "No panel models configured. Set PI_SCRUTINY_PANEL or pass panel.", failure_reason: "missing_panel" });
 		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
 		return { result, brief: result.error ?? "Scrutiny failed." };
@@ -59,12 +59,12 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	const packet = await buildTaskPacket({ params: input.params, surface, cwd: input.cwd, config, exec: input.exec, signal: input.signal });
 	await fs.writeFile(packetPath, packet, { encoding: "utf8", mode: 0o600 });
 
-	const panel = panelRoles(panelModels, surface);
+	const panel = panelRoles(panelMembers, surface);
 	let progress: ScrutinyRunProgress = {
 		runId,
 		surface,
 		packetPath,
-		panel: panel.map((item) => ({ model: item.model, role: item.role, status: "pending" })),
+		panel: panel.map((item) => ({ model: item.model, role: item.role, thinking: item.thinking, status: "pending" })),
 		judge: runJudgeByPolicy && judgeModel ? { model: judgeModel, role: "trade-off explainer", status: "pending" } : undefined,
 		startedAt,
 		updatedAt: Date.now(),
@@ -85,6 +85,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 				tools,
 				timeoutMs: config.panelTimeoutMs,
 				outputCharLimit: config.maxPanelOutputChars,
+				thinkingLevel: item.thinking,
 				signal: input.signal,
 			});
 			progress = updatePanel(progress, index, { status: response.status === "ok" ? "ready" : "failed", endedAt: Date.now() });
