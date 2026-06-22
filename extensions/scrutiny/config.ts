@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { Council, PanelMember, ScrutinyConfig, ScrutinyConfigSource, ScrutinyParams, ScrutinySurface, ThinkingLevel, VerifyCheckSpec } from "./types.js";
+import type { Council, PanelMember, PanelMode, ScrutinyConfig, ScrutinyConfigSource, ScrutinyParams, ScrutinySurface, ThinkingLevel, VerifyCheckSpec } from "./types.js";
 
 const DEFAULT_MAX_PANEL_MODELS = 4;
 const DEFAULT_PANEL_TIMEOUT_MS = 60_000;
@@ -20,12 +20,12 @@ const DEFAULT_VERIFY_CHECKS: VerifyCheckSpec[] = [
 
 export const SCRUTINY_SURFACES: ScrutinySurface[] = ["consult", "hypotheses", "criteria", "repo-map", "risks", "verify"];
 
-export const SURFACE_DEFAULTS: Record<ScrutinySurface, { panelCount: number; judgeMode: "auto" | "off" | "on"; includeGitDiff: boolean; verify: boolean }> = {
-	consult: { panelCount: 2, judgeMode: "auto", includeGitDiff: false, verify: false },
-	hypotheses: { panelCount: 2, judgeMode: "off", includeGitDiff: true, verify: false },
-	criteria: { panelCount: 2, judgeMode: "off", includeGitDiff: true, verify: false },
-	"repo-map": { panelCount: 2, judgeMode: "off", includeGitDiff: true, verify: false },
-	risks: { panelCount: 2, judgeMode: "off", includeGitDiff: true, verify: true },
+export const SURFACE_DEFAULTS: Record<ScrutinySurface, { panelCount: number; panelMode?: PanelMode; judgeMode: "auto" | "off" | "on"; includeGitDiff: boolean; verify: boolean }> = {
+	consult: { panelCount: 2, panelMode: "replicate", judgeMode: "auto", includeGitDiff: false, verify: false },
+	hypotheses: { panelCount: 2, panelMode: "replicate", judgeMode: "off", includeGitDiff: true, verify: false },
+	criteria: { panelCount: 2, panelMode: "replicate", judgeMode: "off", includeGitDiff: true, verify: false },
+	"repo-map": { panelCount: 2, panelMode: "roles", judgeMode: "off", includeGitDiff: true, verify: false },
+	risks: { panelCount: 2, panelMode: "roles", judgeMode: "off", includeGitDiff: true, verify: true },
 	verify: { panelCount: 0, judgeMode: "off", includeGitDiff: true, verify: true },
 };
 

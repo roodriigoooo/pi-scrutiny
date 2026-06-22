@@ -15,12 +15,12 @@ this is scrutiny as consultation, not scrutiny as democracy, and not scrutiny of
 one tool, `scrutiny_consult`, and one command, `/scrutiny`, expose six **surfaces**. each surface produces a distinct non-patch artifact:
 
 ```text
-consult      bounded research/synthesis. trade-off explainer runs by default.
-hypotheses   ranked root causes + confirming evidence + minimal distinguishing tests. no fix yet.
-criteria     fused acceptance spec: edge cases, backward-compat, migration, test cases.
-repo-map     compact context (symbols, call paths, tests, config, invariants) for an upcoming edit.
-risks        per-class risk review of a patch (concurrency, reactive-chain, api-compat, security, perf, migration, null, flaky). runs verify.
-verify       runs tests/typecheck/lint as the objective arbiter. no panel, no judge. blocks.
+consult      replicate mode: bounded research/synthesis. trade-off explainer runs by default.
+hypotheses   replicate mode: ranked root causes + confirming evidence + minimal distinguishing tests. no fix yet.
+criteria     replicate mode: acceptance spec: edge cases, backward-compat, migration, test cases.
+repo-map     roles mode: compact context (symbols, call paths, tests, config, invariants) for an upcoming edit.
+risks        roles mode: per-class risk review of a patch (concurrency, reactive-chain, api-compat, security, perf, migration, null, flaky). runs verify.
+verify       no panel: runs tests/typecheck/lint as objective arbiter. no judge. blocks.
 ```
 
 deliberation surfaces run **inline** and stream compact status chips while the panel works; `verify` blocks on objective checks. the main pi agent synthesizes and acts.
@@ -29,7 +29,7 @@ deliberation surfaces run **inline** and stream compact status chips while the p
 
 - **arbiter is objective, not textual.** correctness is decided by tests, type checks, static analysis, runtime, diff size, architecture constraints, and sometimes human review. an llm judge is weak as the final arbiter of a repo-wide change.
 - **do not fuse patches.** fusing N patches into one frankenstein diff that no model validated is the failure mode to avoid. fuse uncertainty, evidence, tests, plans, context, risks.
-- **disagreement is a stop signal.** if panelists disagree sharply, that means gather more evidence, run a narrower test, or ask the human — not smooth it into a synthesized answer.
+- **disagreement is a stop signal only in replicate mode.** `consult`, `hypotheses`, and `criteria` send same prompt to all panelists, so sharp disagreement is meaningful. `repo-map` and `risks` use role lenses; there the signal is coverage/gaps, not conflict.
 - **judge demoted to trade-off explainer.** it never decides correctness. it only explains trade-offs, and only runs for `consult` by default.
 - **simplicity is protected.** few surfaces, legible activation, simple model selection. the palette shows only the chips that matter for the chosen surface.
 
@@ -38,8 +38,8 @@ deliberation surfaces run **inline** and stream compact status chips while the p
 pi subagents and docket workers already do fanout. the point here is the layer around it:
 
 - task packet builder
-- per-surface panel lenses and prompt schemas
-- compact structured return + disagreement stop-signal
+- per-surface panel modes: replicate prompts where agreement matters, role lenses where coverage matters
+- compact structured return + honest signal labels (disagreement for replicate, coverage/gaps for roles)
 - replicated input budget awareness
 - objective `verify` as the real arbiter
 - out-of-context storage of full panel outputs under `.pi/scrutiny/<run-id>/`
@@ -114,7 +114,7 @@ pi -e ./extensions/scrutiny.ts
 /scrutiny ask compare these two implementation plans
 ```
 
-or open the palette (`/scrutiny`) and press **ctrl+p** to cycle through configured saved panels — the surface, members, lenses, and optional thinking levels update to match the saved panel.
+or open the palette (`/scrutiny`) and press **ctrl+p** to cycle through configured saved panels — surface, members, role lenses (roles surfaces), and optional thinking levels update to match saved panel.
 
 or let the main model call `scrutiny_consult` when the extra spend is worth it.
 
@@ -129,6 +129,8 @@ the main pi agent synthesizes and acts on the evidence. the arbiter is objective
 ## defaults
 
 - 2 panelists is the intended shape for deliberation
+- `consult`, `hypotheses`, and `criteria` use replicate mode: same prompt, model priors provide diversity
+- `repo-map` and `risks` use roles mode: assigned lenses provide coverage; disagreement stop-signal is disabled
 - panel models run independently, `--no-tools` by default
 - no auto-spend
 - trade-off explainer skipped except `consult` (or `judgeMode: on`)

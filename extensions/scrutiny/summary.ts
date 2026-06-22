@@ -123,9 +123,10 @@ function analysisToText(result: ScrutinyRunResult): string {
 	return [
 		...(analysis.consensus ?? []),
 		...(analysis.risks ?? []),
+		...(analysis.coverage ?? []),
 		...(analysis.blind_spots ?? []),
 		...(analysis.unique_insights ?? []).map((item) => item.insight),
-		...(analysis.contradictions ?? []).flatMap((item) => [item.topic, ...item.stances.map((stance) => stance.stance)]),
+		...(result.panel_mode === "roles" ? [] : (analysis.contradictions ?? []).flatMap((item) => [item.topic, ...item.stances.map((stance) => stance.stance)])),
 	].join("\n");
 }
 
@@ -134,10 +135,11 @@ function extractSignals(result: ScrutinyRunResult): string[] {
 	if (!analysis) return [];
 	const consensus = (analysis.consensus ?? []).filter((item) => !/panelists returned usable output|shared technical vocabulary/i.test(item));
 	const uniqueInsights = (analysis.unique_insights ?? []).map((item) => item.insight);
-	return unique([...consensus, ...uniqueInsights]).map((item) => truncate(item, 300));
+	return unique([...consensus, ...(analysis.coverage ?? []), ...uniqueInsights]).map((item) => truncate(item, 300));
 }
 
 function extractContradictions(result: ScrutinyRunResult): string[] {
+	if (result.panel_mode === "roles") return [];
 	return (result.analysis?.contradictions ?? []).map((item) => {
 		const stances = item.stances.map((stance) => `${stance.model}: ${stance.stance}`).join(" | ");
 		return truncate(`${item.topic}${stances ? ` — ${stances}` : ""}`, 400);

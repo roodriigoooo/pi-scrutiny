@@ -1,4 +1,4 @@
-import type { ScrutinyAnalysis, ScrutinyRunResult, PanelResponse, VerifyReport, ScrutinySurface } from "./types.js";
+import type { PanelMode, ScrutinyAnalysis, PanelResponse, VerifyReport, ScrutinySurface } from "./types.js";
 import { truncate } from "./util.js";
 
 export function formatFailureBrief(input: {
@@ -49,7 +49,8 @@ function isToolIntentPreamble(text: string): boolean {
 		|| /\b(can'?t|cannot|don'?t)\b.{0,80}\b(access|inspect|read)\b.{0,80}\b(repo|files?)\b/i.test(compact);
 }
 
-export function buildDeterministicAnalysis(responses: PanelResponse[]): ScrutinyAnalysis {
+export function buildDeterministicAnalysis(responses: PanelResponse[], panelMode: PanelMode | undefined = "replicate"): ScrutinyAnalysis {
+	const mode = panelMode ?? "replicate";
 	const ok = responses.filter((response) => response.status === "ok" && response.content.trim());
 	const risks = unique(ok.flatMap((response) => extractRiskLines(response.content)).slice(0, 8));
 	const uniqueInsights = ok.flatMap((response) =>
@@ -58,27 +59,36 @@ export function buildDeterministicAnalysis(responses: PanelResponse[]): Scrutiny
 			.slice(0, 3)
 			.map((insight) => ({ model: response.model, insight: truncate(insight, 280) })),
 	);
-	const sharedTerms = sharedKeywords(ok.map((response) => response.content));
-	const contradictions = detectContradictions(ok) ?? [];
-	const consensus = [
-		`${ok.length}/${responses.length} panelists returned usable output.`,
-		sharedTerms.length ? `Shared technical vocabulary: ${sharedTerms.join(", ")}.` : "No strong lexical consensus detected; compare panel stances before synthesizing.",
-	];
+	const sharedTerms = mode === "replicate" ? sharedKeywords(ok.map((response) => response.content)) : [];
+	const contradictions = mode === "replicate" ? detectContradictions(ok) ?? [] : [];
+	const coverage = mode === "roles" ? roleCoverage(responses) : undefined;
+	const consensus = mode === "replicate"
+		? [
+			`${ok.length}/${responses.length} panelists returned usable output.`,
+			sharedTerms.length ? `Shared technical vocabulary: ${sharedTerms.join(", ")}.` : "No strong lexical consensus detected; compare panel stances before synthesizing.",
+		]
+		: [
+			`${ok.length}/${responses.length} role lenses returned usable output.`,
+			"Roles mode: coverage/gaps are signal; disagreement stop-signal disabled.",
+		];
+	const blindSpots = mode === "roles"
+		? roleGaps(responses)
+		: ["Deterministic analysis does not infer all semantic contradictions; main Pi model should compare panel stances before final answer."];
 	return {
 		consensus,
 		contradictions,
 		unique_insights: uniqueInsights.slice(0, 8),
 		risks,
-		blind_spots: [
-			"Deterministic analysis does not infer all semantic contradictions; main Pi model should compare panel stances before final answer.",
-		],
+		coverage,
+		blind_spots: blindSpots,
 		confidence: ok.length >= 2 ? (contradictions.length ? "low" : "medium") : "low",
-		disagreement_signal: contradictions.length > 0,
+		disagreement_signal: mode === "replicate" && contradictions.length > 0,
 	};
 }
 
 export function formatScrutinyBrief(input: {
 	surface: ScrutinySurface;
+	panelMode?: PanelMode;
 	analysis?: ScrutinyAnalysis;
 	responses: PanelResponse[];
 	failedModels: Array<{ model: string; error: string }>;
@@ -91,6 +101,7 @@ export function formatScrutinyBrief(input: {
 	const lines: string[] = [];
 	lines.push(`# Scrutiny ${input.surface} result`);
 	lines.push(input.budgetLine);
+	if (input.panelMode) lines.push(panelModeBriefLine(input.surface, input.panelMode));
 	lines.push(input.judgeRan ? "evidence map: trade-off explainer ran" : "evidence map: deterministic only; main Pi model synthesizes");
 	if (input.verify) lines.push(verifyLine(input.verify));
 	lines.push("");
@@ -103,9 +114,10 @@ export function formatScrutinyBrief(input: {
 		}
 		lines.push(`## Evidence map`);
 		pushList(lines, "Shared signals", input.analysis.consensus);
-		pushContradictions(lines, input.analysis.contradictions);
+		if (input.panelMode !== "roles") pushContradictions(lines, input.analysis.contradictions);
 		pushUnique(lines, input.analysis.unique_insights);
 		pushList(lines, "Risks", input.analysis.risks);
+		pushList(lines, "Coverage", input.analysis.coverage);
 		pushList(lines, "Blind spots", input.analysis.blind_spots);
 		if (input.analysis.confidence) lines.push(`confidence: ${input.analysis.confidence}`);
 		lines.push("");
@@ -143,7 +155,7 @@ export function formatVerifyBrief(input: { verify: VerifyReport; budgetLine: str
 	lines.push("Verify is the objective arbiter. No LLM judge involved.");
 	lines.push("");
 	lines.push(formatVerifyReport(input.verify));
-	lines.push("", "Next: the main agent acts on pass/fail above. Fix failing checks before any panel deliberation weighs in.");
+	lines.push("", "RECOMMENDED NEXT ACTION: act on pass/fail above. Fix failing checks before any panel deliberation weighs in.");
 	return lines.join("\n").trim();
 }
 
@@ -169,20 +181,26 @@ function verifyLine(verify: VerifyReport): string {
 	return `verify: ${verify.passed} pass · ${verify.failed} fail · ${verify.skipped} skipped`;
 }
 
+function panelModeBriefLine(surface: ScrutinySurface, panelMode: PanelMode): string {
+	return panelMode === "replicate"
+		? `[${surface}] replicate · agreement/disagreement is signal.`
+		: `[${surface}] roles · coverage/gaps are signal; disagreement stop-signal disabled.`;
+}
+
 function surfaceActionLine(surface: ScrutinySurface): string {
 	switch (surface) {
 		case "consult":
-			return "Final answer instruction: synthesize from evidence above. Treat panel as consultation, not authority.";
+			return "RECOMMENDED NEXT ACTION: synthesize from evidence above. Treat panel as consultation, not authority.";
 		case "hypotheses":
-			return "Next: run the best distinguishing test(s), then act against the repo. Do not merge a fix until a hypothesis is confirmed by evidence.";
+			return "RECOMMENDED NEXT ACTION: run best distinguishing test(s), then act against repo. Do not merge a fix until hypothesis is confirmed by evidence.";
 		case "criteria":
-			return "Next: implement against the fused spec above. Run verify after the edit.";
+			return "RECOMMENDED NEXT ACTION: implement against fused spec above. Run verify after edit.";
 		case "repo-map":
-			return "Next: use the map above as context for one coding agent to edit. Do not fuse edits from multiple panelists.";
+			return "RECOMMENDED NEXT ACTION: use map above as context for one coding agent to edit. Do not fuse edits from multiple panelists.";
 		case "risks":
-			return "Next: address findings by running the suggested checks/tests, then editing. Do not merge risk-review prose into a patch.";
+			return "RECOMMENDED NEXT ACTION: address findings by running suggested checks/tests, then editing. Do not merge risk-review prose into patch.";
 		case "verify":
-			return "Next: act on pass/fail above. The arbiter is these checks, not any model.";
+			return "RECOMMENDED NEXT ACTION: act on pass/fail above. Arbiter is checks, not any model.";
 	}
 }
 
@@ -205,6 +223,31 @@ function pushUnique(lines: string[], items: ScrutinyAnalysis["unique_insights"])
 	if (!items || items.length === 0) return;
 	lines.push(`### Unique insights`);
 	for (const item of items.slice(0, 8)) lines.push(`- ${item.model}: ${item.insight}`);
+}
+
+function roleCoverage(responses: PanelResponse[]): string[] {
+	const ok = responses.filter((response) => response.status === "ok" && response.content.trim());
+	const failed = responses.filter((response) => response.status !== "ok" || !response.content.trim());
+	return unique([
+		ok.length ? `Covered lenses: ${ok.map((response) => response.role).join(", ")}.` : undefined,
+		failed.length ? `Missing/failed lenses: ${failed.map((response) => response.role).join(", ")}.` : undefined,
+	].filter((item): item is string => Boolean(item)));
+}
+
+function roleGaps(responses: PanelResponse[]): string[] {
+	const failed = responses.filter((response) => response.status !== "ok" || !response.content.trim());
+	const missing = responses.flatMap((response) => extractMissingContextLines(response.content));
+	return unique([
+		"Roles mode does not compare panelists for contradiction; inspect missing lenses and uncovered risk classes.",
+		...failed.map((response) => `No usable coverage from ${response.role} (${response.model}).`),
+		...missing,
+	]).slice(0, 8);
+}
+
+function extractMissingContextLines(text: string): string[] {
+	return extractBullets(text)
+		.filter((line) => /\b(missing|not shown|not in (the )?packet|insufficient|unknown|cannot determine|can't determine|need(?:s)? to inspect|must inspect|would need|need more evidence|not enough evidence|gap|uncovered)\b/i.test(line))
+		.map((line) => truncate(line, 280));
 }
 
 function extractBullets(text: string): string[] {

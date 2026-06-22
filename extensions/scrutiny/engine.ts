@@ -6,7 +6,7 @@ import { buildTaskPacket, judgePrompt, panelPrompt, panelRoles } from "./packet.
 import { runModelTask } from "./runner.js";
 import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
 import { writeRunResult } from "./summary.js";
-import type { ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
+import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
 import { createRunId, formatDuration, formatTokens, scrutinyDataDir, parseAnalysisJson, safeMkdir, truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
@@ -31,6 +31,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	const runId = createRunId();
 	const config = readScrutinyConfig({ cwd: input.cwd, projectTrusted: input.projectTrusted });
 	const surface: ScrutinySurface = resolveSurface(input.params);
+	const panelMode = SURFACE_DEFAULTS[surface].panelMode;
 	const panelMembers = surface === "verify" ? [] : resolvePanel(input.params, config);
 	const tools = resolveTools(input.params, config);
 	const judgeModel = resolveJudge(input.params, config, panelMembers);
@@ -75,6 +76,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	let progress: ScrutinyRunProgress = {
 		runId,
 		surface,
+		panel_mode: panelMode,
 		packetPath,
 		panel: panel.map((item) => ({ model: item.model, role: item.role, thinking: item.thinking, status: "pending" })),
 		judge: runJudgeByPolicy && judgeModel ? { model: judgeModel, role: "trade-off explainer", status: "pending" } : undefined,
@@ -94,7 +96,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 				const response = await runModelTask({
 					model: item.model,
 					role: item.role,
-					prompt: panelPrompt({ packet, role: item.role, surface }),
+					prompt: panelPrompt({ packet, role: item.role, surface, panelMode }),
 					cwd: input.cwd,
 					tools,
 					timeoutMs: config.panelTimeoutMs,
@@ -120,6 +122,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		const result: ScrutinyRunResult = {
 			runId,
 			surface,
+			panel_mode: panelMode,
 			status: "error",
 			failure_reason: "all_panels_failed",
 			error: "all panel models failed",
@@ -144,6 +147,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		const result: ScrutinyRunResult = {
 			runId,
 			surface,
+			panel_mode: panelMode,
 			status: "error",
 			failure_reason: "all_panels_failed",
 			error: `panel outputs unusable: ${mush}`,
@@ -163,7 +167,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	}
 
 	let judge: PanelResponse | undefined;
-	let analysis: ScrutinyAnalysis | undefined = buildDeterministicAnalysis(responses);
+	let analysis: ScrutinyAnalysis | undefined = buildDeterministicAnalysis(responses, panelMode);
 	const runJudge = runJudgeByPolicy && Boolean(judgeModel);
 
 	if (runJudge && judgeModel) {
@@ -173,7 +177,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 			() => runModelTask({
 				model: judgeModel,
 				role: "trade-off explainer",
-				prompt: judgePrompt({ packet, responses: okResponses.map((response) => ({ model: response.model, role: response.role, content: response.content })) }),
+				prompt: judgePrompt({ packet, panelMode, responses: okResponses.map((response) => ({ model: response.model, role: response.role, content: response.content })) }),
 				cwd: input.cwd,
 				tools,
 				timeoutMs: config.judgeTimeoutMs,
@@ -184,7 +188,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 			() => emit(input, progress),
 		);
 		const judgeAnalysis = judge.status === "ok" ? parseAnalysisJson(judge.content) : undefined;
-		if (judgeAnalysis) analysis = mergeAnalysis(analysis, judgeAnalysis);
+		if (judgeAnalysis) analysis = mergeAnalysis(analysis, judgeAnalysis, panelMode);
 		progress = { ...progress, judge: { model: judgeModel, role: "trade-off explainer", status: judgeAnalysis ? "ready" : "failed", endedAt: Date.now() }, updatedAt: Date.now(), message: judgeAnalysis ? "trade-off explainer ready" : "trade-off explainer failed; deterministic evidence map kept" };
 		emit(input, progress);
 	}
@@ -215,6 +219,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	const result: ScrutinyRunResult = {
 		runId,
 		surface,
+		panel_mode: panelMode,
 		status: "ok",
 		failure_reason: judge && judge.status !== "ok" ? "judge_failed" : undefined,
 		packetPath,
@@ -235,6 +240,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 
 	const brief = formatScrutinyBrief({
 		surface,
+		panelMode,
 		analysis,
 		responses,
 		failedModels,
@@ -402,15 +408,17 @@ function shouldRunVerify(surface: ScrutinySurface, verifyParam: ScrutinyParams["
 	return SURFACE_DEFAULTS[surface].verify;
 }
 
-function mergeAnalysis(deterministic: ScrutinyAnalysis, judge: ScrutinyAnalysis): ScrutinyAnalysis {
+function mergeAnalysis(deterministic: ScrutinyAnalysis, judge: ScrutinyAnalysis, panelMode: PanelMode | undefined): ScrutinyAnalysis {
+	const canDisagree = panelMode !== "roles";
 	return {
 		consensus: judge.consensus ?? deterministic.consensus,
-		contradictions: judge.contradictions?.length ? judge.contradictions : deterministic.contradictions,
+		contradictions: canDisagree && judge.contradictions?.length ? judge.contradictions : deterministic.contradictions,
 		unique_insights: judge.unique_insights ?? deterministic.unique_insights,
 		risks: judge.risks?.length ? judge.risks : deterministic.risks,
+		coverage: judge.coverage?.length ? judge.coverage : deterministic.coverage,
 		blind_spots: judge.blind_spots ?? deterministic.blind_spots,
 		confidence: judge.confidence ?? deterministic.confidence,
-		disagreement_signal: judge.disagreement_signal ?? deterministic.disagreement_signal,
+		disagreement_signal: canDisagree ? judge.disagreement_signal ?? deterministic.disagreement_signal : false,
 	};
 }
 

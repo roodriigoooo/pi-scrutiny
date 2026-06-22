@@ -1,4 +1,4 @@
-import type { PanelMember, ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./types.js";
+import type { PanelMember, PanelMode, ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./types.js";
 import { SURFACE_DEFAULTS } from "./config.js";
 import { buildContextScoutSection } from "./scout.js";
 import { truncate } from "./util.js";
@@ -100,11 +100,15 @@ const SURFACE_SPECS: Record<Exclude<ScrutinySurface, "verify">, SurfaceSpec> = {
 	},
 };
 
-export function panelPrompt(input: { packet: string; role: string; surface: ScrutinySurface }): string {
+export function panelPrompt(input: { packet: string; role: string; surface: ScrutinySurface; panelMode?: PanelMode }): string {
 	if (input.surface === "verify") throw new Error("verify surface has no panel prompt");
 	const spec = SURFACE_SPECS[input.surface];
+	const panelMode = input.panelMode ?? SURFACE_DEFAULTS[input.surface].panelMode ?? "roles";
+	const frame = panelMode === "replicate"
+		? `${spec.heading} Panel mode: replicate. Every panelist receives this same prompt; model priors provide diversity.`
+		: `${spec.heading} Panel mode: roles. Role: ${input.role}.`;
 	return [
-		`${spec.heading} Role: ${input.role}.`,
+		frame,
 		"Produce one independent analysis from the packet only. Do not claim you will call tools or inspect files.",
 		"Return Markdown with these headings exactly:",
 		...spec.panelHeadings,
@@ -115,7 +119,11 @@ export function panelPrompt(input: { packet: string; role: string; surface: Scru
 	].join("\n");
 }
 
-export function judgePrompt(input: { packet: string; responses: Array<{ model: string; role: string; content: string }> }): string {
+export function judgePrompt(input: { packet: string; panelMode?: PanelMode; responses: Array<{ model: string; role: string; content: string }> }): string {
+	const panelMode = input.panelMode ?? "replicate";
+	const disagreementInstruction = panelMode === "replicate"
+		? "Set disagreement_signal=true when panelists disagree sharply on root cause, architecture, or a load-bearing claim. The main agent treats that as a stop signal to gather more evidence or ask the human, not as noise to smooth over."
+		: "Panel mode is roles: each panelist used a different lens. Set disagreement_signal=false. Treat non-overlap as coverage/gaps, not contradiction; report gaps in blind_spots or risks.";
 	const responses = input.responses
 		.map((response, index) => [`### Panel ${index + 1}: ${response.model} (${response.role})`, response.content].join("\n"))
 		.join("\n\n");
@@ -132,7 +140,7 @@ export function judgePrompt(input: { packet: string; responses: Array<{ model: s
 		`  "confidence": "low|medium|high"`,
 		`}`,
 		"",
-		"Set disagreement_signal=true when panelists disagree sharply on root cause, architecture, or a load-bearing claim. The main agent treats that as a stop signal to gather more evidence or ask the human, not as noise to smooth over.",
+		disagreementInstruction,
 		"You explain trade-offs only. The main Pi agent and objective repo checks are the arbiters.",
 		"",
 		"Original task packet:",
@@ -155,6 +163,8 @@ const SURFACE_LENSES: Record<Exclude<ScrutinySurface, "verify">, LensSet> = {
 
 export function panelRoles(members: PanelMember[], surface: ScrutinySurface): Array<{ model: string; role: string; thinking?: PanelMember["thinking"] }> {
 	if (surface === "verify") return [];
+	const panelMode = SURFACE_DEFAULTS[surface].panelMode ?? "roles";
+	if (panelMode === "replicate") return members.map((member) => ({ model: member.model, role: "replicate analyst", thinking: member.thinking }));
 	const lenses = SURFACE_LENSES[surface];
 	return members.map((member, index) => ({ model: member.model, role: member.lens ?? lenses[index] ?? `panelist-${index + 1}`, thinking: member.thinking }));
 }

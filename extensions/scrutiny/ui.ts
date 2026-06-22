@@ -1,6 +1,7 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
-import type { ScrutinyRunProgress, ScrutinyRunResult, PanelResponse } from "./types.js";
+import { SURFACE_DEFAULTS } from "./config.js";
+import type { PanelMode, ScrutinyRunProgress, ScrutinyRunResult, PanelResponse } from "./types.js";
 import { formatDuration, formatTokens, truncate } from "./util.js";
 
 export function scrutinyStatusText(details: unknown): string {
@@ -9,7 +10,8 @@ export function scrutinyStatusText(details: unknown): string {
 		const failed = details.failed_models.length;
 		const judge = details.judge ? (details.judge.status === "ok" ? "map:on" : "map:failed") : "map:off";
 		const panel = details.responses.length ? ` [panel ${ok}/${details.responses.length}]` : " [no panel]";
-		return `scrutiny [${details.status}] [${details.surface}] ${formatDuration(details.durationMs)}${panel}${failed ? ` [fail ${failed}]` : ""} [${judge}]`;
+		const mode = details.panel_mode ? ` [${details.panel_mode}]` : "";
+		return `scrutiny [${details.status}] [${details.surface}]${mode} ${formatDuration(details.durationMs)}${panel}${failed ? ` [fail ${failed}]` : ""} [${judge}]`;
 	}
 	if (isProgress(details)) {
 		const ready = details.panel.filter((item) => item.status === "ready").length;
@@ -18,7 +20,8 @@ export function scrutinyStatusText(details: unknown): string {
 		const elapsed = formatDuration(Math.max(0, details.updatedAt - details.startedAt));
 		const phase = progressPhase(details);
 		const panel = details.panel.length ? ` [panel ${ready}/${details.panel.length}]` : " [verify]";
-		return `scrutiny [${details.surface}] ${elapsed}${panel}${running ? ` [thinking ${running}]` : ""}${failed ? ` [fail ${failed}]` : ""} [${phase}]`;
+		const mode = details.panel_mode ? ` [${details.panel_mode}]` : "";
+		return `scrutiny [${details.surface}]${mode} ${elapsed}${panel}${running ? ` [thinking ${running}]` : ""}${failed ? ` [fail ${failed}]` : ""} [${phase}]`;
 	}
 	return "scrutiny";
 }
@@ -43,7 +46,7 @@ export function renderScrutinyCall(args: any, theme: any) {
 	const panel = Array.isArray(args?.panel) && args.panel.length ? args.panel : undefined;
 	const judgeMode = args?.judgeMode ?? "auto";
 	const title = theme.fg("toolTitle", theme.bold("scrutiny_consult"));
-	const bits = [chip(theme, surface, "accent"), chip(theme, panel ? `${panel.length} panel` : "env panel", panel ? "success" : "muted"), chip(theme, `map:${judgeMode}`, judgeMode === "on" ? "warning" : "muted")];
+	const bits = [chip(theme, surface, "accent"), modeChip(theme, surface), chip(theme, panel ? `${panel.length} panel` : "env panel", panel ? "success" : "muted"), chip(theme, `map:${judgeMode}`, judgeMode === "on" ? "warning" : "muted")];
 	return new Text(`${title} ${bits.join(" ")}`, 0, 0);
 }
 
@@ -99,6 +102,11 @@ function chip(theme: any, text: string, color: "accent" | "muted" | "success" | 
 	return theme.fg(color, `[${text}]`);
 }
 
+function modeChip(theme: any, surface: string): string {
+	const mode = (SURFACE_DEFAULTS as Partial<Record<string, { panelMode?: PanelMode }>>)[surface]?.panelMode;
+	return mode ? chip(theme, mode, mode === "replicate" ? "accent" : "muted") : chip(theme, "no panel", "muted");
+}
+
 function progressPhase(progress: ScrutinyRunProgress): string {
 	if (progress.judge?.status === "running") return "map";
 	if (/verify/i.test(progress.message ?? "")) return "verify";
@@ -115,7 +123,9 @@ export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any
 		const failed = progress.panel.filter((item) => item.status === "failed").length;
 		const running = progress.panel.filter((item) => item.status === "running").length;
 		const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
-		const chips = [chip(theme, progress.surface, "accent"), chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning")];
+		const chips = [chip(theme, progress.surface, "accent")];
+		if (progress.panel_mode) chips.push(chip(theme, progress.panel_mode, progress.panel_mode === "replicate" ? "accent" : "muted"));
+		chips.push(chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning"));
 		if (running) chips.push(chip(theme, `thinking ${running}`, "warning"));
 		if (failed) chips.push(chip(theme, `fail ${failed}`, "error"));
 		chips.push(chip(theme, progressPhase(progress), "muted"));
@@ -131,7 +141,9 @@ function renderProgress(progress: ScrutinyRunProgress, theme: any): string {
 	const failed = progress.panel.filter((item) => item.status === "failed").length;
 	const running = progress.panel.filter((item) => item.status === "running").length;
 	const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
-	const chips = [chip(theme, progress.surface, "accent"), chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning")];
+	const chips = [chip(theme, progress.surface, "accent")];
+	if (progress.panel_mode) chips.push(chip(theme, progress.panel_mode, progress.panel_mode === "replicate" ? "accent" : "muted"));
+	chips.push(chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning"));
 	if (running) chips.push(chip(theme, `thinking ${running}`, "warning"));
 	if (failed) chips.push(chip(theme, `fail ${failed}`, "error"));
 	chips.push(chip(theme, progressPhase(progress), "muted"));
@@ -150,7 +162,8 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	const failed = result.responses.filter((response) => response.status === "error");
 	const lines: string[] = [];
 	const color = result.status === "ok" ? "success" : "error";
-	lines.push(`${theme.fg(color, result.status === "ok" ? "◆" : "✕")} ${theme.bold("scrutiny")} ${theme.fg("dim", result.surface)} ${theme.fg("muted", `· ${formatDuration(result.durationMs)}`)}`);
+	const mode = result.panel_mode ? ` · ${result.panel_mode}` : "";
+	lines.push(`${theme.fg(color, result.status === "ok" ? "◆" : "✕")} ${theme.bold("scrutiny")} ${theme.fg("dim", `${result.surface}${mode}`)} ${theme.fg("muted", `· ${formatDuration(result.durationMs)}`)}`);
 	if (result.status === "error" && result.error) {
 		lines.push(`  ${theme.fg("error", truncate(result.error, 180).replace(/\n/g, " "))}`);
 	}
@@ -161,8 +174,9 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	}
 	for (const response of result.responses) lines.push(panelLine(response, theme));
 	if (result.analysis?.disagreement_signal) lines.push(`  ${theme.fg("error", "⚠ disagreement")} ${theme.fg("dim", "stop signal — gather evidence or ask human, do not smooth")}`);
-	if (result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 120).replace(/\n/g, " ")}`);
+	if (result.panel_mode !== "roles" && result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 120).replace(/\n/g, " ")}`);
 	if (result.analysis?.consensus?.length) lines.push(`  ${theme.fg("accent", "shared")} ${truncate(result.analysis.consensus[0] ?? "", 140).replace(/\n/g, " ")}`);
+	if (result.analysis?.coverage?.length) lines.push(`  ${theme.fg("accent", "coverage")} ${truncate(result.analysis.coverage[0] ?? "", 140).replace(/\n/g, " ")}`);
 	if (result.analysis?.risks?.length) lines.push(`  ${theme.fg("warning", "risk")} ${truncate(result.analysis.risks[0] ?? "", 140).replace(/\n/g, " ")}`);
 	const context = contextStats(result);
 	if (context.hasContext) lines.push(`  ${theme.fg("accent", "context")} scout ${context.candidates} · memory ${context.memory} · gaps ${context.gaps}`);
@@ -192,6 +206,7 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 	const lines: string[] = [];
 	lines.push(`# Scrutiny ${result.status}`);
 	lines.push(`surface: ${result.surface}  `);
+	if (result.panel_mode) lines.push(`panel mode: ${result.panel_mode}  `);
 	lines.push(`duration: ${formatDuration(result.durationMs)}  `);
 	if (result.packetPath) {
 		lines.push(`result: \`${artifactPath(result.packetPath, "result.json")}\``);
@@ -202,12 +217,13 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 		lines.push("## Evidence map");
 		pushList(lines, "Consensus", result.analysis.consensus);
 		pushList(lines, "Risks", result.analysis.risks);
+		pushList(lines, "Coverage", result.analysis.coverage);
 		pushList(lines, "Blind spots", result.analysis.blind_spots);
 		if (result.analysis.unique_insights?.length) {
 			lines.push("### Unique insights");
 			for (const item of result.analysis.unique_insights) lines.push(`- **${item.model}**: ${item.insight}`);
 		}
-		if (result.analysis.contradictions?.length) {
+		if (result.panel_mode !== "roles" && result.analysis.contradictions?.length) {
 			lines.push("### Contradictions");
 			for (const item of result.analysis.contradictions) {
 				lines.push(`- ${item.topic}`);

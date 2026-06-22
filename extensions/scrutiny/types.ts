@@ -1,4 +1,5 @@
 export type ScrutinySurface = "consult" | "hypotheses" | "criteria" | "repo-map" | "risks" | "verify";
+export type PanelMode = "replicate" | "roles";
 export type ScrutinyStatus = "pending" | "running" | "ready" | "failed";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -37,6 +38,7 @@ export type ScrutinyAnalysis = {
 	contradictions?: Array<{ topic: string; stances: Array<{ model: string; stance: string }> }>;
 	unique_insights?: Array<{ model: string; insight: string }>;
 	risks?: string[];
+	coverage?: string[];
 	blind_spots?: string[];
 	confidence?: "low" | "medium" | "high" | string;
 	disagreement_signal?: boolean;
@@ -45,6 +47,7 @@ export type ScrutinyAnalysis = {
 export type ScrutinyRunProgress = {
 	runId: string;
 	surface: ScrutinySurface;
+	panel_mode?: PanelMode;
 	packetPath?: string;
 	panel: PanelSpec[];
 	judge?: PanelSpec;
@@ -57,6 +60,7 @@ export type ScrutinyRunProgress = {
 export type ScrutinyRunResult = {
 	runId: string;
 	surface: ScrutinySurface;
+	panel_mode?: PanelMode;
 	status: "ok" | "error";
 	failure_reason?: "missing_panel" | "all_panels_failed" | "judge_failed" | "recursion_capped" | "unexpected_error" | "verify_failed";
 	error?: string;

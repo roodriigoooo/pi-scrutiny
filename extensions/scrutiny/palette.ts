@@ -191,7 +191,7 @@ class ScrutinyPalette implements Component, Focusable {
 			} else if (council.panelists.length === 0) {
 				lines.push(frameLine(`${this.theme.fg("error", "×")} saved panel has no members ${dim("fix panels config")}`, w, this.theme));
 			} else {
-				lines.push(frameLine(`${accent("lenses")} ${dim("independent panel, not a vote; do not fuse patches")}`, w, this.theme));
+				lines.push(frameLine(`${accent("mode")} ${dim(surfaceModeLine(council.surface))}`, w, this.theme));
 				for (const [index, p] of council.panelists.entries()) {
 					const icon = index === 0 ? ok("●") : accent("●");
 					const lens = p.lens ?? panelRoles([p], council.surface)[0]?.role ?? "panelist";
@@ -203,7 +203,7 @@ class ScrutinyPalette implements Component, Focusable {
 			lines.push(frameLine(`${ok("◆")} ${dim("objective arbiter · no panel · no judge")}`, w, this.theme));
 			lines.push(frameLine(`${dim("checks:")} ${accent(this.verifyCheckNames())}`, w, this.theme));
 		} else {
-			lines.push(frameLine(`${accent("lenses")} ${dim("independent panel, not a vote; do not fuse patches")}`, w, this.theme));
+			lines.push(frameLine(`${accent("mode")} ${dim(surfaceModeLine(this.state.surface))}`, w, this.theme));
 			const roles = panelRoles(this.panelMembers.slice(0, this.state.panelCount), this.state.surface);
 			if (roles.length === 0) {
 				lines.push(frameLine(`${this.theme.fg("error", "×")} panel missing ${dim("set PI_SCRUTINY_PANEL=provider/model,provider/model")}`, w, this.theme));
@@ -249,6 +249,8 @@ class ScrutinyPalette implements Component, Focusable {
 		const council = this.activeCouncil();
 		if (council) {
 			const chips = [chip(this.theme, `@${council.name}`, "accent"), chip(this.theme, council.surface, "muted")];
+			const mode = SURFACE_DEFAULTS[council.surface].panelMode;
+			if (mode) chips.push(chip(this.theme, mode, mode === "replicate" ? "accent" : "muted"));
 			if (council.surface !== "verify") chips.push(chip(this.theme, `members ${council.panelists.length}`, council.panelists.length ? "success" : "error"));
 			if (council.judgeMode) chips.push(chip(this.theme, `map:${council.judgeMode}`, council.judgeMode === "on" ? "warning" : "muted"));
 			if (council.verify !== undefined) chips.push(chip(this.theme, `verify:${council.verify ? "on" : "off"}`, council.verify ? "warning" : "muted"));
@@ -256,6 +258,8 @@ class ScrutinyPalette implements Component, Focusable {
 			return chips.join(" ");
 		}
 		const chips = [chip(this.theme, this.state.surface, this.state.surfaceLocked ? "accent" : "muted")];
+		const mode = SURFACE_DEFAULTS[this.state.surface].panelMode;
+		if (mode) chips.push(chip(this.theme, mode, mode === "replicate" ? "accent" : "muted"));
 		if (this.state.surface !== "verify") {
 			chips.push(chip(this.theme, `panel ${this.state.panelCount}/${this.panelMembers.length}`, this.state.panelCount ? "success" : "error"));
 			chips.push(chip(this.theme, `map:${this.state.judgeMode}`, this.state.judgeMode === "on" ? "warning" : "muted"));
@@ -351,6 +355,13 @@ class ScrutinyPalette implements Component, Focusable {
 	private rerender(): void {
 		this.tui.requestRender();
 	}
+}
+
+function surfaceModeLine(surface: ScrutinySurface): string {
+	const mode = SURFACE_DEFAULTS[surface].panelMode;
+	if (mode === "replicate") return "replicate · same prompt · disagreement is signal";
+	if (mode === "roles") return "roles · separate lenses · coverage/gaps are signal";
+	return "objective arbiter · no panel";
 }
 
 function inferPaletteSurface(prompt: string): ScrutinySurface {
