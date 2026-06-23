@@ -4,7 +4,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Council, PanelMember, PanelMode, ScrutinyConfig, ScrutinyConfigSource, ScrutinyParams, ScrutinySurface, ThinkingLevel, VerifyCheckSpec } from "./types.js";
 
 const DEFAULT_MAX_PANEL_MODELS = 4;
-const DEFAULT_PANEL_TIMEOUT_MS = 60_000;
+const DEFAULT_PANEL_TIMEOUT_MS = 180_000;
 const DEFAULT_JUDGE_TIMEOUT_MS = 60_000;
 const DEFAULT_VERIFY_TIMEOUT_MS = 120_000;
 const DEFAULT_PANEL_OUTPUT_CHARS = 24_000;

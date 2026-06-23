@@ -1,18 +1,25 @@
 # pi-scrutiny
 
-a pi extension for multi-model deliberation and objective repo verification.
+multi-model deliberation and objective repo verification for the pi coding agent.
 
-the spark was openrouter fusion: send a hard prompt to a panel of models and use the combined signal. but that spark only holds for **bounded, research-style synthesis**. it is not strong evidence that fusing model outputs helps long-horizon coding.
+## why this exists
 
-so this extension is built around a stricter idea:
+openrouter fusion sends one hard prompt to several models at once and merges the answers. it works well for bounded research questions where you want diverse priors on the same problem. that was the original inspiration for this extension.
 
-> do not fuse patches. fuse hypotheses, constraints, risks, and verification strategies. then let one coding agent act against the repo and tests. the arbiter is objective repo tools and sometimes human review — never an llm judge.
+but fusion is not evidence that fusing model outputs helps with long-horizon coding. multi-turn coding workflows involve editing files, running tests, reading feedback, iterating. no amount of parallel prose from language models settles whether a change to a real repo is correct. tests, type checks, and human review do that.
 
-this is scrutiny as consultation, not scrutiny as democracy, and not scrutiny of final code.
+so scrutiny takes the part of fusion that is grounded (independent perspectives on a shared question) and drops the part that is not (textual merging as a correctness signal). what you get is:
+
+- send a hard question to a panel of models, each answering independently from the same packet
+- fuse hypotheses, constraints, risks, and verification strategies, never patches
+- let one coding agent act against the repo and tests
+- the arbiter is objective repo tools, not an llm judge
+
+consultation, not democracy. deliberation, not patch fusion.
 
 ## what it does
 
-one tool, `scrutiny_consult`, and one command, `/scrutiny`, expose six **surfaces**. each surface produces a distinct non-patch artifact:
+one tool, `scrutiny_consult`, and one command, `/scrutiny`, expose six **surfaces**. each produces a distinct non-patch artifact:
 
 ```text
 consult      replicate mode: bounded research/synthesis. trade-off explainer runs by default.
@@ -23,33 +30,32 @@ risks        roles mode: per-class risk review of a patch (concurrency, reactive
 verify       no panel: runs tests/typecheck/lint as objective arbiter. no judge. blocks.
 ```
 
-deliberation surfaces run **inline** and stream compact status chips while the panel works; `verify` blocks on objective checks. the main pi agent synthesizes and acts.
+## panel modes
+
+two epistemic instruments, not stylistic variants:
+
+- **replicate** (`consult`, `hypotheses`, `criteria`): every panelist gets the same prompt. diversity comes from model priors. the signal is agreement or disagreement. sharp disagreement is a stop signal: gather more evidence, run a narrower test, or ask the human. do not smooth it into a synthesized answer.
+
+- **roles** (`repo-map`, `risks`): each panelist gets a different lens. diversity comes from task-splitting. the signal is coverage and gaps, not conflict. a concurrency reviewer saying "avoid X" and a security reviewer not mentioning X is not a disagreement. it is coverage of different facets.
+
+the analysis layer is honest about which mode it is in. disagreement is computed only in replicate mode. roles mode computes coverage and gaps instead.
+
+## how calls happen
+
+panelists run **sequentially**, one at a time. each panelist is a `pi` subprocess (`pi --mode json -p --no-session --model <model> --no-tools <prompt>`) that receives the full task packet and returns its analysis as structured markdown. the engine collects each response, then builds a deterministic evidence map (shared vocabulary, contradictions, unique insights, risks, coverage/gaps). optionally, a trade-off explainer model compares the panel outputs. optionally, verify runs objective repo checks.
+
+only one scrutiny run can be active at a time. if you call `/scrutiny` while a run is in progress, the second call is rejected with a clear message. this is deliberate: parallel scrutiny runs would compete for provider rate limits, make progress harder to read, and add cost without adding signal.
 
 ## principles
 
 - **arbiter is objective, not textual.** correctness is decided by tests, type checks, static analysis, runtime, diff size, architecture constraints, and sometimes human review. an llm judge is weak as the final arbiter of a repo-wide change.
 - **do not fuse patches.** fusing N patches into one frankenstein diff that no model validated is the failure mode to avoid. fuse uncertainty, evidence, tests, plans, context, risks.
-- **disagreement is a stop signal only in replicate mode.** `consult`, `hypotheses`, and `criteria` send same prompt to all panelists, so sharp disagreement is meaningful. `repo-map` and `risks` use role lenses; there the signal is coverage/gaps, not conflict.
+- **disagreement is a stop signal only in replicate mode.** same-prompt panelists disagreeing on a load-bearing point means gather more evidence. role-lens panelists not overlapping means coverage, not conflict.
+- **sequential, not parallel.** panelists run one at a time. one run at a time. scrutiny is deliberation, not a race.
 - **judge demoted to trade-off explainer.** it never decides correctness. it only explains trade-offs, and only runs for `consult` by default.
-- **simplicity is protected.** few surfaces, legible activation, simple model selection. the palette shows only the chips that matter for the chosen surface.
-
-## why not just use subagents?
-
-pi subagents and docket workers already do fanout. the point here is the layer around it:
-
-- task packet builder
-- per-surface panel modes: replicate prompts where agreement matters, role lenses where coverage matters
-- compact structured return + honest signal labels (disagreement for replicate, coverage/gaps for roles)
-- replicated input budget awareness
-- objective `verify` as the real arbiter
-- out-of-context storage of full panel outputs under `.pi/scrutiny/<run-id>/`
-- a quiet tui for seeing what happened
-
-the runner inside this repo is intentionally tiny and swappable. long term it should sit on the subagent or docket substrate.
+- **simplicity is protected.** few surfaces, legible activation, simple model selection.
 
 ## configure
-
-preferred: edit config inside pi:
 
 ```text
 /scrutiny config edit           # global ~/.pi/agent/scrutiny.json
@@ -81,15 +87,15 @@ example `scrutiny.json`:
 }
 ```
 
-`councils`/`panelists` still work as old aliases for `panels`/`members`. `PI_SCRUTINY_*` env vars still work and override config files for shell-specific experiments.
+`councils`/`panelists` still work as old aliases for `panels`/`members`. `PI_SCRUTINY_*` env vars still work and override config files.
 
-install locally:
+install:
 
 ```bash
 pi install /Users/rosastre/.pi/scrutiny
 ```
 
-or try it once:
+or try once:
 
 ```bash
 pi -e ./extensions/scrutiny.ts
@@ -114,29 +120,26 @@ pi -e ./extensions/scrutiny.ts
 /scrutiny ask compare these two implementation plans
 ```
 
-or open the palette (`/scrutiny`) and press **ctrl+p** to cycle through configured saved panels — surface, members, role lenses (roles surfaces), and optional thinking levels update to match saved panel.
+press **ctrl+p** in the palette to cycle through saved panels.
 
 or let the main model call `scrutiny_consult` when the extra spend is worth it.
 
 ## flow
 
-surfaces run **inline** and stream a compact status footer plus an active-run dock while the panel works — these show elapsed time, ready/thinking/failed counts, and current phase (panel / evidence map / verify). press **esc** to cancel a foreground run (native pi abort, propagated to panel subprocesses). deliberation can take time; that is expected and deliberate. flow protection here means legibility — surfaces are well-understood, reachable, and show what is happening — not minimal latency.
+surfaces run **inline** and stream a compact status line while the panel works. press **esc** to cancel. deliberation takes time; that is expected.
 
-run tracking: a lightweight in-memory registry records each run (run-id, surface, status, runDir). `/scrutiny runs` lists recent in-session runs. `/scrutiny history` opens searchable artifact history backed by `.pi/scrutiny/index.jsonl`; full outputs persist on disk under `.pi/scrutiny/<run-id>/` regardless of the registry.
+runs persist on disk under `.pi/scrutiny/<run-id>/` (`packet.md`, `responses.json`, per-surface JSON, `verify.json`, `result.json`). `/scrutiny history` opens searchable artifact history backed by `.pi/scrutiny/index.jsonl`.
 
-the main pi agent synthesizes and acts on the evidence. the arbiter is objective repo tools + human review, never an llm judge.
+every brief ends with one machine-actionable line: `RECOMMENDED NEXT ACTION: ...`. that is what the main agent acts on. prose lives in the expanded view and history.
 
 ## defaults
 
 - 2 panelists is the intended shape for deliberation
-- `consult`, `hypotheses`, and `criteria` use replicate mode: same prompt, model priors provide diversity
-- `repo-map` and `risks` use roles mode: assigned lenses provide coverage; disagreement stop-signal is disabled
-- panel models run independently, `--no-tools` by default
+- `consult`, `hypotheses`, `criteria` use replicate mode (same prompt, disagreement is signal)
+- `repo-map`, `risks` use roles mode (assigned lenses, coverage/gaps is signal)
+- panelists run sequentially, one at a time, `--no-tools` by default
+- only one scrutiny run active at a time
+- panel timeout: 180s per panelist (configurable via `PI_SCRUTINY_PANEL_TIMEOUT_MS`)
 - no auto-spend
 - trade-off explainer skipped except `consult` (or `judgeMode: on`)
 - `risks` and `verify` run objective repo checks
-- full outputs saved under `.pi/scrutiny/<run-id>/` (`packet.md`, `responses.json`, per-surface JSON, `verify.json`, `result.json`)
-
-## status
-
-early. the reorientation from answer-scrutiny to deliberation+verify is in progress. patch tournament (N independent patches scored by objective checks) is deferred and opt-in only, because it is the most failure-prone surface.

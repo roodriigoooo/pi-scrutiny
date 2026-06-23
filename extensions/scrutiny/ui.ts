@@ -8,20 +8,16 @@ export function scrutinyStatusText(details: unknown): string {
 	if (isResult(details)) {
 		const ok = details.responses.filter((response) => response.status === "ok").length;
 		const failed = details.failed_models.length;
-		const judge = details.judge ? (details.judge.status === "ok" ? "map:on" : "map:failed") : "map:off";
-		const panel = details.responses.length ? ` [panel ${ok}/${details.responses.length}]` : " [no panel]";
-		const mode = details.panel_mode ? ` [${details.panel_mode}]` : "";
-		return `scrutiny [${details.status}] [${details.surface}]${mode} ${formatDuration(details.durationMs)}${panel}${failed ? ` [fail ${failed}]` : ""} [${judge}]`;
+		const mode = details.panel_mode ? ` ${details.panel_mode}` : "";
+		const panel = details.responses.length ? ` ${ok}/${details.responses.length}` : "";
+		return `scrutiny ${details.status} ${details.surface}${mode} ${formatDuration(details.durationMs)}${panel}${failed ? ` ${failed} failed` : ""}`;
 	}
 	if (isProgress(details)) {
 		const ready = details.panel.filter((item) => item.status === "ready").length;
-		const failed = details.panel.filter((item) => item.status === "failed").length;
-		const running = details.panel.filter((item) => item.status === "running").length;
 		const elapsed = formatDuration(Math.max(0, details.updatedAt - details.startedAt));
-		const phase = progressPhase(details);
-		const panel = details.panel.length ? ` [panel ${ready}/${details.panel.length}]` : " [verify]";
-		const mode = details.panel_mode ? ` [${details.panel_mode}]` : "";
-		return `scrutiny [${details.surface}]${mode} ${elapsed}${panel}${running ? ` [thinking ${running}]` : ""}${failed ? ` [fail ${failed}]` : ""} [${phase}]`;
+		const mode = details.panel_mode ? ` ${details.panel_mode}` : "";
+		const panel = details.panel.length ? ` ${ready}/${details.panel.length}` : " verify";
+		return `scrutiny ${details.surface}${mode} ${elapsed}${panel} ${progressPhase(details)}`;
 	}
 	return "scrutiny";
 }
@@ -46,7 +42,7 @@ export function renderScrutinyCall(args: any, theme: any) {
 	const panel = Array.isArray(args?.panel) && args.panel.length ? args.panel : undefined;
 	const judgeMode = args?.judgeMode ?? "auto";
 	const title = theme.fg("toolTitle", theme.bold("scrutiny_consult"));
-	const bits = [chip(theme, surface, "accent"), modeChip(theme, surface), chip(theme, panel ? `${panel.length} panel` : "env panel", panel ? "success" : "muted"), chip(theme, `map:${judgeMode}`, judgeMode === "on" ? "warning" : "muted")];
+	const bits = [chip(theme, surface, "accent"), modeChip(theme, surface), chip(theme, panel ? `${panel.length} models` : "env panel", panel ? "success" : "muted"), chip(theme, `map:${judgeMode}`, judgeMode === "on" ? "warning" : "muted")];
 	return new Text(`${title} ${bits.join(" ")}`, 0, 0);
 }
 
@@ -117,41 +113,31 @@ function progressPhase(progress: ScrutinyRunProgress): string {
 
 export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any): string[] {
 	if (progresses.length === 0) return [];
-	const lines = [`${theme.fg("accent", "◆")} ${theme.bold("scrutiny dock")} ${chip(theme, `${progresses.length} active`, "accent")} ${chip(theme, "esc cancels foreground run", "muted")}`];
-	for (const progress of progresses.slice(0, 4)) {
+	const lines = [`${theme.fg("accent", "◆")} ${theme.bold("scrutiny")} ${theme.fg("dim", "esc to cancel")}`];
+	for (const progress of progresses.slice(0, 1)) {
 		const ready = progress.panel.filter((item) => item.status === "ready").length;
-		const failed = progress.panel.filter((item) => item.status === "failed").length;
 		const running = progress.panel.filter((item) => item.status === "running").length;
 		const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
-		const chips = [chip(theme, progress.surface, "accent")];
-		if (progress.panel_mode) chips.push(chip(theme, progress.panel_mode, progress.panel_mode === "replicate" ? "accent" : "muted"));
-		chips.push(chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning"));
-		if (running) chips.push(chip(theme, `thinking ${running}`, "warning"));
-		if (failed) chips.push(chip(theme, `fail ${failed}`, "error"));
-		chips.push(chip(theme, progressPhase(progress), "muted"));
-		const message = progress.message ? ` ${theme.fg("dim", "·")} ${theme.fg("muted", truncate(progress.message.replace(/\s+/g, " "), 92))}` : "";
-		lines.push(`  ${theme.fg("warning", "◐")} ${chips.join(" ")} ${theme.fg("dim", shortRunId(progress.runId))}${message}`);
+		const mode = progress.panel_mode ? ` ${progress.panel_mode}` : "";
+		const status = progress.panel.length ? `${ready}/${progress.panel.length}` : "verify";
+		const icon = running ? theme.fg("warning", "◐") : theme.fg("accent", "◆");
+		lines.push(`  ${icon} ${theme.fg("accent", progress.surface)}${theme.fg("dim", mode)} ${theme.fg("muted", elapsed)} ${theme.fg("dim", status)} ${theme.fg("muted", progressPhase(progress))}`);
+		const current = progress.panel.find((item) => item.status === "running");
+		if (current) lines.push(`    ${theme.fg("warning", "→")} ${theme.fg("toolOutput", current.model)} ${theme.fg("dim", current.role)}`);
 	}
-	if (progresses.length > 4) lines.push(`  ${theme.fg("dim", `+${progresses.length - 4} more active`)}`);
 	return lines;
 }
 
 function renderProgress(progress: ScrutinyRunProgress, theme: any): string {
 	const ready = progress.panel.filter((item) => item.status === "ready").length;
-	const failed = progress.panel.filter((item) => item.status === "failed").length;
-	const running = progress.panel.filter((item) => item.status === "running").length;
 	const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
-	const chips = [chip(theme, progress.surface, "accent")];
-	if (progress.panel_mode) chips.push(chip(theme, progress.panel_mode, progress.panel_mode === "replicate" ? "accent" : "muted"));
-	chips.push(chip(theme, elapsed, "muted"), progress.panel.length ? chip(theme, `panel ${ready}/${progress.panel.length}`, ready === progress.panel.length ? "success" : "warning") : chip(theme, "verify", "warning"));
-	if (running) chips.push(chip(theme, `thinking ${running}`, "warning"));
-	if (failed) chips.push(chip(theme, `fail ${failed}`, "error"));
-	chips.push(chip(theme, progressPhase(progress), "muted"));
+	const mode = progress.panel_mode ? ` ${progress.panel_mode}` : "";
+	const status = progress.panel.length ? `${ready}/${progress.panel.length}` : "verify";
 	const lines: string[] = [];
-	lines.push(`${theme.fg("accent", "◐")} ${theme.bold("scrutiny")} ${chips.join(" ")}`);
-	if (progress.message) lines.push(`  ${theme.fg("dim", truncate(progress.message.replace(/\s+/g, " "), 140))}`);
+	lines.push(`${theme.fg("accent", "◐")} ${theme.bold("scrutiny")} ${theme.fg("accent", progress.surface)}${theme.fg("dim", mode)} ${theme.fg("muted", elapsed)} ${theme.fg("dim", status)} ${theme.fg("muted", progressPhase(progress))}`);
 	for (const item of progress.panel) {
-		lines.push(`  ${statusIcon(item.status, theme)} ${theme.fg("toolOutput", item.model)} ${theme.fg("dim", item.role)}`);
+		const dur = item.endedAt ? formatDuration(item.endedAt - (item.startedAt ?? progress.startedAt)) : "";
+		lines.push(`  ${statusIcon(item.status, theme)} ${theme.fg("toolOutput", item.model)} ${theme.fg("dim", item.role)}${dur ? ` ${theme.fg("muted", dur)}` : ""}`);
 	}
 	if (progress.judge) lines.push(`  ${statusIcon(progress.judge.status, theme)} ${theme.fg("toolOutput", progress.judge.model)} ${theme.fg("dim", progress.judge.role)}`);
 	return lines.join("\n");
@@ -162,34 +148,23 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	const failed = result.responses.filter((response) => response.status === "error");
 	const lines: string[] = [];
 	const color = result.status === "ok" ? "success" : "error";
-	const mode = result.panel_mode ? ` · ${result.panel_mode}` : "";
-	lines.push(`${theme.fg(color, result.status === "ok" ? "◆" : "✕")} ${theme.bold("scrutiny")} ${theme.fg("dim", `${result.surface}${mode}`)} ${theme.fg("muted", `· ${formatDuration(result.durationMs)}`)}`);
+	const mode = result.panel_mode ? ` ${result.panel_mode}` : "";
+	lines.push(`${theme.fg(color, result.status === "ok" ? "◆" : "✕")} ${theme.bold("scrutiny")} ${theme.fg("accent", result.surface)}${theme.fg("dim", mode)} ${theme.fg("muted", formatDuration(result.durationMs))}`);
 	if (result.status === "error" && result.error) {
 		lines.push(`  ${theme.fg("error", truncate(result.error, 180).replace(/\n/g, " "))}`);
 	}
-	if (result.responses.length === 0 && !result.verify) {
-		lines.push(`  ${theme.fg("warning", "no panel models configured")}`);
-	} else if (result.responses.length > 0) {
-		lines.push(`  ${theme.fg("success", `${ok.length}/${result.responses.length} panel ready`)}${failed.length ? theme.fg("warning", ` · ${failed.length} failed`) : ""}${result.judge ? ` · ${result.judge.status === "ok" ? theme.fg("success", "evidence map ready") : theme.fg("warning", "evidence map failed")}` : theme.fg("dim", " · evidence map skipped")}`);
+	if (result.responses.length > 0) {
+		const judgeBit = result.judge ? ` ${result.judge.status === "ok" ? theme.fg("success", "map") : theme.fg("warning", "map:failed")}` : "";
+		lines.push(`  ${theme.fg("success", `${ok.length}/${result.responses.length} ready`)}${failed.length ? ` ${theme.fg("warning", `${failed.length} failed`)}` : ""}${judgeBit}`);
 	}
 	for (const response of result.responses) lines.push(panelLine(response, theme));
-	if (result.analysis?.disagreement_signal) lines.push(`  ${theme.fg("error", "⚠ disagreement")} ${theme.fg("dim", "stop signal — gather evidence or ask human, do not smooth")}`);
-	if (result.panel_mode !== "roles" && result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 120).replace(/\n/g, " ")}`);
-	if (result.analysis?.consensus?.length) lines.push(`  ${theme.fg("accent", "shared")} ${truncate(result.analysis.consensus[0] ?? "", 140).replace(/\n/g, " ")}`);
-	if (result.analysis?.coverage?.length) lines.push(`  ${theme.fg("accent", "coverage")} ${truncate(result.analysis.coverage[0] ?? "", 140).replace(/\n/g, " ")}`);
-	if (result.analysis?.risks?.length) lines.push(`  ${theme.fg("warning", "risk")} ${truncate(result.analysis.risks[0] ?? "", 140).replace(/\n/g, " ")}`);
-	const context = contextStats(result);
-	if (context.hasContext) lines.push(`  ${theme.fg("accent", "context")} scout ${context.candidates} · memory ${context.memory} · gaps ${context.gaps}`);
-	if (result.verify) lines.push(`  ${theme.fg(result.verify.failed ? "error" : "success", "verify")} ${result.verify.passed} pass · ${result.verify.failed} fail · ${result.verify.skipped} skip`);
-	if (result.packetPath) {
-		lines.push(`  ${theme.fg("dim", `ctrl+o expand · result ${artifactPath(result.packetPath, "result.json")}`)}`);
-		lines.push(`  ${theme.fg("dim", `packet ${result.packetPath}`)}`);
-	}
+	if (result.analysis?.disagreement_signal) lines.push(`  ${theme.fg("error", "⚠ disagreement")} ${theme.fg("dim", "stop signal")}`);
+	else if (result.panel_mode !== "roles" && result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 100).replace(/\n/g, " ")}`);
+	else if (result.analysis?.coverage?.length) lines.push(`  ${theme.fg("accent", "coverage")} ${truncate(result.analysis.coverage[0] ?? "", 100).replace(/\n/g, " ")}`);
+	else if (result.analysis?.consensus?.length) lines.push(`  ${theme.fg("accent", "shared")} ${truncate(result.analysis.consensus[0] ?? "", 100).replace(/\n/g, " ")}`);
+	if (result.verify) lines.push(`  ${theme.fg(result.verify.failed ? "error" : "success", "verify")} ${result.verify.passed} pass ${result.verify.failed} fail ${result.verify.skipped} skip`);
+	if (result.packetPath) lines.push(`  ${theme.fg("dim", "ctrl+o expand")}`);
 	return lines.join("\n");
-}
-
-function shortRunId(runId: string): string {
-	return runId.split("_").at(-1) ?? runId;
 }
 
 function artifactPath(packetPath: string, file: string): string {
@@ -197,9 +172,10 @@ function artifactPath(packetPath: string, file: string): string {
 }
 
 function panelLine(response: PanelResponse, theme: any): string {
-	const usage = response.usage.input || response.usage.output ? ` ↑${formatTokens(response.usage.input)} ↓${formatTokens(response.usage.output)}` : "";
+	const dur = formatDuration(response.durationMs);
+	const usage = response.usage.input || response.usage.output ? ` ${formatTokens(response.usage.input)}↑ ${formatTokens(response.usage.output)}↓` : "";
 	const cost = response.usage.cost ? ` $${response.usage.cost.toFixed(4)}` : "";
-	return `  ${response.status === "ok" ? theme.fg("success", "●") : theme.fg("error", "×")} ${theme.fg("toolOutput", response.model)} ${theme.fg("dim", `${response.role} · ${formatDuration(response.durationMs)}${usage}${cost}`)}`;
+	return `  ${response.status === "ok" ? theme.fg("success", "●") : theme.fg("error", "×")} ${theme.fg("toolOutput", response.model)} ${theme.fg("dim", response.role)} ${theme.fg("muted", dur)}${theme.fg("dim", usage)}${theme.fg("dim", cost)}`;
 }
 
 function renderExpandedMarkdown(result: ScrutinyRunResult): string {

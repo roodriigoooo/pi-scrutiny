@@ -26,6 +26,18 @@ type RunScrutinyInput = {
 const PANEL_EXCERPT_CHARS = 2_400;
 const PROGRESS_HEARTBEAT_MS = 1_000;
 
+let activeRunId: string | undefined;
+
+function acquireRunLock(runId: string): boolean {
+	if (activeRunId && activeRunId !== runId) return false;
+	activeRunId = runId;
+	return true;
+}
+
+function releaseRunLock(runId: string): void {
+	if (activeRunId === runId) activeRunId = undefined;
+}
+
 export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: ScrutinyRunResult; brief: string }> {
 	const startedAt = Date.now();
 	const runId = createRunId();
@@ -40,22 +52,33 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	const runDir = path.join(scrutinyDataDir(input.cwd), runId);
 	const packetPath = path.join(runDir, "packet.md");
 
+	if (!acquireRunLock(runId)) {
+		const result = emptyError({ runId, surface, startedAt, error: "A scrutiny run is already in progress. Wait for it to finish before starting another.", failure_reason: "unexpected_error" });
+		safeMkdir(runDir);
+		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
+		return { result, brief: result.error ?? "Scrutiny failed." };
+	}
+
 	if (process.env.PI_SCRUTINY_DEPTH) {
 		const result = emptyError({ runId, surface, startedAt, error: "nested scrutiny invocation blocked", failure_reason: "recursion_capped" });
 		safeMkdir(runDir);
 		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
+		releaseRunLock(runId);
 		return { result, brief: "Scrutiny blocked: nested invocation." };
 	}
 
 	safeMkdir(runDir);
 
 	if (surface === "verify") {
-		return runVerifyOnly({ runId, surface, cwd: input.cwd, exec: input.exec, config, runDir, startedAt, signal: input.signal, onProgress: input.onProgress, params: input.params });
+		const out = await runVerifyOnly({ runId, surface, cwd: input.cwd, exec: input.exec, config, runDir, startedAt, signal: input.signal, onProgress: input.onProgress, params: input.params });
+		releaseRunLock(runId);
+		return out;
 	}
 
 	if (panelMembers.length === 0) {
 		const result = emptyError({ runId, surface, startedAt, error: "No panel models configured. Set PI_SCRUTINY_PANEL or pass panel.", failure_reason: "missing_panel" });
 		await writeRunResult({ cwd: input.cwd, runDir, result, prompt: input.params.prompt });
+		releaseRunLock(runId);
 		return { result, brief: result.error ?? "Scrutiny failed." };
 	}
 
@@ -66,6 +89,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		const confirmedPacket = await input.confirmPacket({ runId, surface, packet, panelCount: panelMembers.length, judgeRan: runJudgeByPolicy && Boolean(judgeModel), verifyRan: runVerifyByPolicy });
 		if (!confirmedPacket) {
 			await fs.rm(runDir, { recursive: true, force: true }).catch(() => undefined);
+			releaseRunLock(runId);
 			throw new Error(SCRUTINY_PACKET_PREVIEW_CANCELLED);
 		}
 		packet = confirmedPacket;
@@ -87,31 +111,31 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	};
 	emit(input, progress);
 
-	const responses = await withProgressHeartbeat(
-		() => Promise.all(
-			panel.map(async (item, index) => {
-				progress = updatePanel(progress, index, { status: "running", startedAt: Date.now() });
-				progress.message = panelProgressLine(responsesSoFar(progress));
-				emit(input, progress);
-				const response = await runModelTask({
-					model: item.model,
-					role: item.role,
-					prompt: panelPrompt({ packet, role: item.role, surface, panelMode }),
-					cwd: input.cwd,
-					tools,
-					timeoutMs: config.panelTimeoutMs,
-					outputCharLimit: config.maxPanelOutputChars,
-					thinkingLevel: item.thinking,
-					signal: input.signal,
-				});
-				progress = updatePanel(progress, index, { status: response.status === "ok" ? "ready" : "failed", endedAt: Date.now() });
-				progress.message = panelProgressLine(responsesSoFar(progress));
-				emit(input, progress);
-				return response;
+	const responses: PanelResponse[] = [];
+	for (let index = 0; index < panel.length; index++) {
+		const item = panel[index]!;
+		progress = updatePanel(progress, index, { status: "running", startedAt: Date.now() });
+		progress.message = `${item.role} · ${index + 1}/${panel.length}`;
+		emit(input, progress);
+		const response = await withProgressHeartbeat(
+			() => runModelTask({
+				model: item.model,
+				role: item.role,
+				prompt: panelPrompt({ packet, role: item.role, surface, panelMode }),
+				cwd: input.cwd,
+				tools,
+				timeoutMs: config.panelTimeoutMs,
+				outputCharLimit: config.maxPanelOutputChars,
+				thinkingLevel: item.thinking,
+				signal: input.signal,
 			}),
-		),
-		() => emit(input, progress),
-	);
+			() => emit(input, progress),
+		);
+		responses.push(response);
+		progress = updatePanel(progress, index, { status: response.status === "ok" ? "ready" : "failed", endedAt: Date.now() });
+		progress.message = panelProgressLine(responsesSoFar(progress));
+		emit(input, progress);
+	}
 
 	await fs.writeFile(path.join(runDir, "responses.json"), JSON.stringify(responses, null, 2), { encoding: "utf8", mode: 0o600 });
 	const okResponses = responses.filter((response) => response.status === "ok" && response.content.trim());
@@ -138,6 +162,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		progress = { ...progress, status: "error", updatedAt: endedAt, message: "all panel models failed" };
 		emit(input, progress);
 		recordRunEnd(runId, { status: "error", endedAt, error: "all panel models failed" });
+		releaseRunLock(runId);
 		return { result, brief: formatFailureBrief({ surface, runId, runDir, responses, failedModels, reason: "all panel models failed" }) };
 	}
 
@@ -163,6 +188,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		progress = { ...progress, status: "error", updatedAt: endedAt, message: `panel outputs unusable: ${mush}` };
 		emit(input, progress);
 		recordRunEnd(runId, { status: "error", endedAt, error: `panel outputs unusable: ${mush}` });
+		releaseRunLock(runId);
 		return { result, brief: formatFailureBrief({ surface, runId, runDir, responses, failedModels, reason: `panel outputs unusable: ${mush}` }) };
 	}
 
@@ -237,6 +263,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	progress = { ...progress, status: "ok", updatedAt: endedAt, message: `done in ${formatDuration(result.durationMs)}` };
 	emit(input, progress);
 	recordRunEnd(runId, { status: "ok", endedAt });
+	releaseRunLock(runId);
 
 	const brief = formatScrutinyBrief({
 		surface,

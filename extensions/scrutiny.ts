@@ -51,6 +51,7 @@ export default function (pi: ExtensionAPI) {
 			"Use the verify surface to run objective repo checks (tests/typecheck/lint) as the real arbiter of a change.",
 			"Never use scrutiny to merge patches from multiple models into one diff. Fuse uncertainty, evidence, tests, plans, context, risks — not final code.",
 			"Treat sharp disagreement as a stop signal only on replicate surfaces (consult/hypotheses/criteria). On roles surfaces (repo-map/risks), treat non-overlap as coverage/gaps.",
+			"Panelists run sequentially. Only one scrutiny run can be active at a time. Do not call scrutiny_consult in parallel.",
 			"Panel deliberation can take time. Mention that input cost is replicated across panel models when proposing an expensive panel.",
 		],
 		parameters: Type.Object({
@@ -267,6 +268,7 @@ function helpText(): string {
 		"",
 		"flow: surfaces run inline and stream a status footer while the panel works. press esc to cancel a run.",
 		"mode: replicate means same prompt and disagreement signal; roles means lenses and coverage/gaps signal.",
+		"panelists run sequentially. one scrutiny run at a time.",
 		"arbiter is objective repo tools + human review, never an LLM judge. do not fuse patches.",
 		"",
 		"```text",

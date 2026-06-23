@@ -45,6 +45,7 @@ export async function runModelTask(input: RunModelTaskInput): Promise<PanelRespo
 			const timeout = setTimeout(() => {
 				timedOut = true;
 				proc.kill("SIGTERM");
+				setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, 3_000);
 			}, input.timeoutMs);
 
 			const abort = () => {
