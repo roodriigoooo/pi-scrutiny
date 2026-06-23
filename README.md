@@ -1,5 +1,8 @@
 # pi-scrutiny
 
+[![npm version](https://img.shields.io/npm/v/@roodriigoooo/pi-scrutiny.svg)](https://www.npmjs.com/package/@roodriigoooo/pi-scrutiny)
+[![CI](https://github.com/roodriigoooo/pi-scrutiny/actions/workflows/ci.yml/badge.svg)](https://github.com/roodriigoooo/pi-scrutiny/actions/workflows/ci.yml)
+
 multi-model deliberation and objective repo verification for the pi coding agent.
 
 ## why this exists
@@ -91,16 +94,30 @@ example `scrutiny.json`:
 
 ## install
 
-Pi Scrutiny is a Pi package. Until the npm package is published, install it directly from GitHub:
+Pi Scrutiny is published on npm as [`@roodriigoooo/pi-scrutiny`](https://www.npmjs.com/package/@roodriigoooo/pi-scrutiny).
+
+Install it globally for pi:
+
+```bash
+pi install npm:@roodriigoooo/pi-scrutiny
+```
+
+Or install it for a single project:
+
+```bash
+pi install -l npm:@roodriigoooo/pi-scrutiny
+```
+
+Pin a specific version when you need reproducible installs:
+
+```bash
+pi install npm:@roodriigoooo/pi-scrutiny@0.1.0
+```
+
+You can also install directly from GitHub:
 
 ```bash
 pi install git:github.com/roodriigoooo/pi-scrutiny
-```
-
-To install it for a single project, write the package entry to project settings instead:
-
-```bash
-pi install -l git:github.com/roodriigoooo/pi-scrutiny
 ```
 
 For local development from a checkout:
@@ -151,6 +168,15 @@ surfaces run **inline** and stream a compact status line while the panel works. 
 runs persist on disk under `.pi/scrutiny/<run-id>/` (`packet.md`, `responses.json`, per-surface JSON, `verify.json`, `result.json`). `/scrutiny history` opens searchable artifact history backed by `.pi/scrutiny/index.jsonl`.
 
 every brief ends with one machine-actionable line: `RECOMMENDED NEXT ACTION: ...`. that is what the main agent acts on. prose lives in the expanded view and history.
+
+## release
+
+Releases are handled by GitHub Actions:
+
+- `CI` runs on pushes and pull requests, then typechecks and verifies package contents with `npm pack --dry-run`.
+- `Release` is a manual workflow. Choose a semver bump and npm dist tag; it runs the same verification, bumps `package.json` and `package-lock.json`, pushes the release commit and tag, publishes to npm with provenance, and creates the GitHub release.
+
+To publish from GitHub, add an npm automation token with publish access as the repository secret `NPM_TOKEN`.
 
 ## defaults
 
