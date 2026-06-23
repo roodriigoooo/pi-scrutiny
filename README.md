@@ -89,17 +89,37 @@ example `scrutiny.json`:
 
 `councils`/`panelists` still work as old aliases for `panels`/`members`. `PI_SCRUTINY_*` env vars still work and override config files.
 
-install:
+## install
+
+Pi Scrutiny is a Pi package. Until the npm package is published, install it directly from GitHub:
 
 ```bash
-pi install /Users/rosastre/.pi/scrutiny
+pi install git:github.com/roodriigoooo/pi-scrutiny
 ```
 
-or try once:
+To install it for a single project, write the package entry to project settings instead:
+
+```bash
+pi install -l git:github.com/roodriigoooo/pi-scrutiny
+```
+
+For local development from a checkout:
+
+```bash
+git clone https://github.com/roodriigoooo/pi-scrutiny.git
+cd pi-scrutiny
+npm install
+npm run check
+pi install "$(pwd)"
+```
+
+To try the extension for one session without installing it:
 
 ```bash
 pi -e ./extensions/scrutiny.ts
 ```
+
+After installation, restart pi and run `/scrutiny help`.
 
 ## use
 
