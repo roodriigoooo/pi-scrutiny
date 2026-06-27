@@ -1,23 +1,13 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { SCRUTINY_SURFACES, SURFACE_DEFAULTS, readScrutinyConfig } from "./config.js";
+import { readScrutinyConfig } from "./config.js";
 import { panelRoles } from "./packet.js";
+import { SCRUTINY_SURFACES, SURFACE_DEFAULTS, SURFACE_HINTS, inferSurface, surfaceModeLine } from "./surfaces.js";
 import type { Council, PanelMember, ScrutinyParams, ScrutinySurface } from "./types.js";
 import { formatTokens } from "./util.js";
 
 const JUDGE_MODES: Array<NonNullable<ScrutinyParams["judgeMode"]>> = ["auto", "off", "on"];
-
-type SurfaceHint = { produces: string; flow: string };
-
-const SURFACE_HINTS: Record<ScrutinySurface, SurfaceHint> = {
-	consult: { produces: "produces a synthesized analysis (research/synthesis)", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	hypotheses: { produces: "produces ranked root causes + distinguishing tests, not a fix", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	criteria: { produces: "produces an acceptance spec to implement against, not a patch", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	"repo-map": { produces: "produces a compact repo map for an upcoming edit, not an answer", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	risks: { produces: "produces per-class risk findings + suggested checks, not a merged patch", flow: "↳ runs inline; panel then verify; esc cancels" },
-	verify: { produces: "produces objective pass/fail (tests, typecheck, lint). the arbiter", flow: "↳ runs inline; blocks until checks finish; esc cancels" },
-};
 
 type PaletteState = {
 	prompt: string;
@@ -35,7 +25,7 @@ export async function showScrutinyPalette(ctx: ExtensionCommandContext, initialP
 	const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 	const councils = config.councils;
 	const maxPanel = Math.max(0, Math.min(config.panel.length, config.maxPanelModels));
-	const initialSurface = inferPaletteSurface(initialPrompt);
+	const initialSurface = inferSurface(initialPrompt);
 	const state: PaletteState = {
 		prompt: initialPrompt,
 		surface: initialSurface,
@@ -344,7 +334,7 @@ class ScrutinyPalette implements Component, Focusable {
 
 	private syncInferredSurface(): void {
 		if (!this.state.surfaceLocked) {
-			const inferred = inferPaletteSurface(this.state.prompt);
+			const inferred = inferSurface(this.state.prompt);
 			if (inferred !== this.state.surface) {
 				this.state.surface = inferred;
 				this.applySurfaceDefaults();
@@ -355,23 +345,6 @@ class ScrutinyPalette implements Component, Focusable {
 	private rerender(): void {
 		this.tui.requestRender();
 	}
-}
-
-function surfaceModeLine(surface: ScrutinySurface): string {
-	const mode = SURFACE_DEFAULTS[surface].panelMode;
-	if (mode === "replicate") return "replicate · same prompt · disagreement is signal";
-	if (mode === "roles") return "roles · separate lenses · coverage/gaps are signal";
-	return "objective arbiter · no panel";
-}
-
-function inferPaletteSurface(prompt: string): ScrutinySurface {
-	const text = prompt.toLowerCase();
-	if (/\b(verify|typecheck|lint|run tests|test suite|does it pass|check the build|ci)\b/.test(text)) return "verify";
-	if (/\b(risk|review the patch|review this change|concurrency|race|reactive|idempoten|circuit.?breaker|security review)\b/.test(text)) return "risks";
-	if (/\b(root cause|why does|debug|intermittent|flaky|bug in|what is causing)\b/.test(text)) return "hypotheses";
-	if (/\b(acceptance criter|edge case|backward.?compat|migrat|spec for|definition of done)\b/.test(text)) return "criteria";
-	if (/\b(repo map|where is|call path|callers of|symbols|trace|how does .* work|navigate the code)\b/.test(text)) return "repo-map";
-	return "consult";
 }
 
 function chip(theme: Theme, text: string, color: "accent" | "muted" | "success" | "warning" | "error"): string {

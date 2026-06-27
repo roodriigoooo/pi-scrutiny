@@ -1,17 +1,15 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { artifactPath, freshness, loadSummaries, type ArtifactKind, type Freshness } from "./artifacts.js";
 import type { ScrutinySummary } from "./types.js";
-import { formatDuration, scrutinyDataDir, truncate } from "./util.js";
+import { formatDuration, truncate } from "./util.js";
 
 const DEFAULT_LIMIT = 12;
 const MAX_LIMIT = 50;
 const ARTIFACT_CHAR_LIMIT = 24_000;
-
-type Freshness = "fresh" | "stale" | "unknown";
 
 type HistoryRow = {
 	summary: ScrutinySummary;
@@ -65,89 +63,9 @@ export async function showHistoryPicker(ctx: ExtensionCommandContext): Promise<s
 }
 
 async function loadHistory(cwd: string): Promise<HistoryLoad> {
-	const dataDir = scrutinyDataDir(cwd);
-	const indexPath = path.join(dataDir, "index.jsonl");
-	const warnings: string[] = [];
-	let summaries: ScrutinySummary[] = [];
-	let rebuilt = false;
-	try {
-		const content = await fs.readFile(indexPath, "utf8");
-		summaries = parseIndex(content, warnings);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`index read failed: ${error instanceof Error ? error.message : String(error)}`);
-		summaries = await scanSummaryFiles(dataDir, warnings);
-		if (summaries.length > 0) {
-			await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
-			await fs.writeFile(indexPath, summaries.map((summary) => JSON.stringify(summary)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
-			rebuilt = true;
-		}
-	}
-	const deduped = dedupeSummaries(summaries).sort((a, b) => b.startedAt - a.startedAt);
-	const rows = await Promise.all(deduped.map(async (summary) => ({ summary, ...(await freshnessFor(cwd, summary)) })));
+	const { summaries, rebuilt, warnings } = await loadSummaries(cwd);
+	const rows = await Promise.all(summaries.map(async (summary) => ({ summary, ...(await freshness(cwd, summary)) })));
 	return { rows, rebuilt, warnings };
-}
-
-function parseIndex(content: string, warnings: string[]): ScrutinySummary[] {
-	const rows: ScrutinySummary[] = [];
-	const lines = content.split(/\r?\n/).filter(Boolean);
-	for (let i = 0; i < lines.length; i++) {
-		try {
-			const parsed = JSON.parse(lines[i]) as ScrutinySummary;
-			if (parsed?.runId && parsed.surface && parsed.startedAt) rows.push(parsed);
-			else warnings.push(`index row ${i + 1} missing required fields`);
-		} catch (error) {
-			warnings.push(`index row ${i + 1} invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
-		}
-	}
-	return rows;
-}
-
-async function scanSummaryFiles(dataDir: string, warnings: string[]): Promise<ScrutinySummary[]> {
-	let entries: import("node:fs").Dirent[];
-	try {
-		entries = await fs.readdir(dataDir, { withFileTypes: true });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`run-dir scan failed: ${error instanceof Error ? error.message : String(error)}`);
-		return [];
-	}
-	const summaries: ScrutinySummary[] = [];
-	for (const entry of entries) {
-		if (!entry.isDirectory() || !entry.name.startsWith("scr_")) continue;
-		const file = path.join(dataDir, entry.name, "summary.json");
-		try {
-			const parsed = JSON.parse(await fs.readFile(file, "utf8")) as ScrutinySummary;
-			if (parsed?.runId) summaries.push(parsed);
-		} catch {
-			warnings.push(`${entry.name}: missing/corrupt summary.json`);
-		}
-	}
-	return summaries;
-}
-
-function dedupeSummaries(summaries: ScrutinySummary[]): ScrutinySummary[] {
-	const byRun = new Map<string, ScrutinySummary>();
-	for (const summary of summaries) byRun.set(summary.runId, summary);
-	return [...byRun.values()];
-}
-
-async function freshnessFor(cwd: string, summary: ScrutinySummary): Promise<{ freshness: Freshness; staleFiles: string[] }> {
-	const entries = Object.entries(summary.fileHashes ?? {});
-	if (entries.length === 0) return { freshness: "unknown", staleFiles: [] };
-	const staleFiles: string[] = [];
-	for (const [file, expected] of entries) {
-		try {
-			const abs = path.resolve(cwd, file);
-			if (!isInside(cwd, abs)) {
-				staleFiles.push(file);
-				continue;
-			}
-			const actual = createHash("sha1").update(await fs.readFile(abs)).digest("hex");
-			if (actual !== expected) staleFiles.push(file);
-		} catch {
-			staleFiles.push(file);
-		}
-	}
-	return { freshness: staleFiles.length ? "stale" : "fresh", staleFiles };
 }
 
 function parseQuery(raw: string): Query {
@@ -274,18 +192,19 @@ function renderRow(lines: string[], row: HistoryRow): void {
 	pushCompact(lines, "signals", summary.signals, 3);
 	pushCompact(lines, "risks", summary.risks, 3);
 	pushCompact(lines, "missing", summary.missingContext, 3);
+	pushCompact(lines, "scout-gaps", summary.scoutGaps, 3);
 	pushCompact(lines, "refs", summary.sourceRefs, 5);
 	const paths = [summary.resultPath, summary.surfaceArtifactPath, summary.packetPath, summary.responsesPath, summary.verifyPath].filter(Boolean).join(" · ");
 	if (paths) lines.push(`paths: ${paths}`);
 	lines.push("");
 }
 
-function pushCompact(lines: string[], label: string, items: string[], limit: number): void {
-	if (!items.length) return;
+function pushCompact(lines: string[], label: string, items: string[] | undefined, limit: number): void {
+	if (!items?.length) return;
 	lines.push(`${label}: ${items.slice(0, limit).map((item) => truncate(item, 140)).join("; ")}${items.length > limit ? `; +${items.length - limit}` : ""}`);
 }
 
-type HistoryArtifact = "summary" | "result" | "surface" | "packet" | "responses" | "verify";
+type HistoryArtifact = ArtifactKind;
 
 class HistoryPicker implements Component, Focusable {
 	focused = false;
@@ -415,6 +334,7 @@ class HistoryPicker implements Component, Focusable {
 		pushPreview(lines, this.theme, "signals", s.signals, 2);
 		pushPreview(lines, this.theme, "risks", s.risks, 2);
 		pushPreview(lines, this.theme, "missing", s.missingContext, 2);
+		pushPreview(lines, this.theme, "scout-gaps", s.scoutGaps, 2);
 		pushPreview(lines, this.theme, "paths", [s.resultPath, s.surfaceArtifactPath, s.packetPath, s.responsesPath, s.verifyPath].filter((item): item is string => Boolean(item)), 3);
 		return lines;
 	}
@@ -488,8 +408,8 @@ function isSubsequence(needle: string, haystack: string): boolean {
 	return index >= needle.length;
 }
 
-function pushPreview(lines: string[], theme: Theme, label: string, items: string[], limit: number): void {
-	if (!items.length) return;
+function pushPreview(lines: string[], theme: Theme, label: string, items: string[] | undefined, limit: number): void {
+	if (!items?.length) return;
 	lines.push(`${theme.fg("muted", `${label}:`)} ${items.slice(0, limit).map((item) => truncate(item, 120)).join("; ")}${items.length > limit ? `; +${items.length - limit}` : ""}`);
 }
 
@@ -509,11 +429,11 @@ async function openArtifactText(cwd: string, args: string): Promise<string> {
 }
 
 async function artifactTextForSummary(cwd: string, summary: ScrutinySummary, artifact: HistoryArtifact): Promise<string> {
-	const artifactPath = pathForArtifact(cwd, summary, artifact);
-	if (!artifactPath) return `# scrutiny history\n\n${artifact} artifact not available for ${summary.runId}.`;
+	const resolved = artifactPath(cwd, summary, artifact);
+	if (!resolved) return `# scrutiny history\n\n${artifact} artifact not available for ${summary.runId}.`;
 	try {
-		const content = await fs.readFile(artifactPath, "utf8");
-		return [`# scrutiny artifact`, "", `${summary.runId} · ${artifact} · ${path.relative(cwd, artifactPath)}`, "", "```", truncate(content.trim(), ARTIFACT_CHAR_LIMIT), "```"].join("\n");
+		const content = await fs.readFile(resolved, "utf8");
+		return [`# scrutiny artifact`, "", `${summary.runId} · ${artifact} · ${path.relative(cwd, resolved)}`, "", "```", truncate(content.trim(), ARTIFACT_CHAR_LIMIT), "```"].join("\n");
 	} catch (error) {
 		return `# scrutiny history\n\nfailed to read ${artifact}: ${error instanceof Error ? error.message : String(error)}`;
 	}
@@ -522,18 +442,6 @@ async function artifactTextForSummary(cwd: string, summary: ScrutinySummary, art
 function normalizeArtifact(token: string): HistoryArtifact | undefined {
 	if (["result", "summary", "surface", "packet", "responses", "verify"].includes(token)) return token as HistoryArtifact;
 	return undefined;
-}
-
-function pathForArtifact(cwd: string, summary: ScrutinySummary, artifact: HistoryArtifact): string | undefined {
-	const runDir = path.join(scrutinyDataDir(cwd), summary.runId);
-	const relPath = artifact === "result" ? summary.resultPath
-		: artifact === "surface" ? summary.surfaceArtifactPath
-		: artifact === "packet" ? summary.packetPath
-		: artifact === "responses" ? summary.responsesPath
-		: artifact === "verify" ? summary.verifyPath
-		: path.join(".pi", "scrutiny", summary.runId, "summary.json");
-	const resolved = path.resolve(cwd, relPath ?? path.join(runDir, `${artifact}.json`));
-	return isInside(cwd, resolved) ? resolved : undefined;
 }
 
 function topBorder(width: number, title: string, theme: Theme): string {
@@ -558,9 +466,4 @@ function frameLine(content: string, width: number, theme: Theme): string {
 
 function isPrintable(data: string): boolean {
 	return data.length > 0 && !/^\x1b/.test(data) && [...data].every((char) => char >= " " || char === "\n" || char === "\t");
-}
-
-function isInside(cwd: string, file: string): boolean {
-	const relative = path.relative(cwd, file);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }

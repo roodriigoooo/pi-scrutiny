@@ -1,6 +1,6 @@
-import type { PanelMember, PanelMode, ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./types.js";
-import { SURFACE_DEFAULTS } from "./config.js";
-import { buildContextScoutSection } from "./scout.js";
+import type { PanelMember, PanelMode, ScrutinyConfig, ScrutinyParams, ScrutinySurface, ScoutReport } from "./types.js";
+import { SURFACE_DEFAULTS, SURFACE_LENSES, SURFACE_PROMPT_SPECS } from "./surfaces.js";
+import { renderScoutMarkdown, runContextScout } from "./scout.js";
 import { truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
@@ -12,7 +12,7 @@ export async function buildTaskPacket(input: {
 	config: ScrutinyConfig;
 	exec: ExecLike;
 	signal?: AbortSignal;
-}): Promise<string> {
+}): Promise<{ packet: string; scout?: ScoutReport }> {
 	const sections: string[] = [];
 	sections.push(`# Scrutiny task packet`);
 	sections.push(`surface: ${input.surface}`);
@@ -25,8 +25,11 @@ export async function buildTaskPacket(input: {
 		sections.push("", `## User-supplied context`, truncate(input.params.context.trim(), 12_000));
 	}
 
-	const scout = await buildContextScoutSection({ params: input.params, surface: input.surface, cwd: input.cwd, exec: input.exec, signal: input.signal });
-	if (scout) sections.push("", scout);
+	let scout: ScoutReport | undefined;
+	if (input.surface !== "verify") {
+		scout = await runContextScout({ params: input.params, surface: input.surface, cwd: input.cwd, exec: input.exec, signal: input.signal });
+		sections.push("", renderScoutMarkdown(scout));
+	}
 
 	const includeGitDiff = input.params.includeGitDiff ?? SURFACE_DEFAULTS[input.surface].includeGitDiff;
 	if (includeGitDiff) {
@@ -35,7 +38,7 @@ export async function buildTaskPacket(input: {
 	}
 
 	sections.push("", "## Instructions", ...sharedInstructions());
-	return sections.join("\n").trim() + "\n";
+	return { packet: sections.join("\n").trim() + "\n", scout };
 }
 
 function sharedInstructions(): string[] {
@@ -50,59 +53,9 @@ function sharedInstructions(): string[] {
 	];
 }
 
-type SurfaceSpec = {
-	heading: string;
-	panelHeadings: string[];
-	trailer: string[];
-};
-
-const SURFACE_SPECS: Record<Exclude<ScrutinySurface, "verify">, SurfaceSpec> = {
-	consult: {
-		heading: "You are a Scrutiny panelist on a bounded research/synthesis question.",
-		panelHeadings: ["## Position", "## Evidence", "## Risks", "## Blind spots / missing evidence", "## Recommendation"],
-		trailer: ["Output is evidence for the main Pi agent to synthesize. It is not a patch."],
-	},
-	hypotheses: {
-		heading: "You are a Scrutiny panelist on a debugging problem. Do not propose a fix yet.",
-		panelHeadings: [
-			"## Likely root causes (ranked)",
-			"## Confirming evidence per cause",
-			"## Minimal distinguishing test",
-			"## What would rule this cause out",
-			"## Missing context / needed inspection",
-		],
-		trailer: [
-			"Do not propose a fix. The main agent will run the best diagnostic, then act against the repo and tests.",
-			"If you disagree with the obvious cause, say so explicitly — disagreement is a useful signal here.",
-		],
-	},
-	criteria: {
-		heading: "You are a Scrutiny panelist deriving acceptance criteria before any code is written.",
-		panelHeadings: ["## Acceptance criteria", "## Edge cases", "## Backward-compatibility risks", "## Migration concerns", "## Test cases", "## Missing context / needed inspection"],
-		trailer: ["The main agent will implement against the fused spec. Be concrete and testable."],
-	},
-	"repo-map": {
-		heading: "You are a Scrutiny panelist mapping the repo for an upcoming edit. Output context, not an answer.",
-		panelHeadings: ["## Relevant symbols", "## Call paths", "## Tests touched", "## Config / files", "## Invariants / prior patterns", "## Missing context / needed inspection"],
-		trailer: [
-			"Output is a compact repo map. The main agent will edit with this context.",
-			"Prefer exact symbol names, file paths, and line references over prose.",
-		],
-	},
-	risks: {
-		heading: "You are a Scrutiny risk reviewer. You review one risk class only.",
-		panelHeadings: ["## Risk class", "## Findings", "## Severity", "## Suggested check or test", "## Missing context / needed inspection"],
-		trailer: [
-			"Focus on your assigned risk class. Do not review other classes.",
-			"For Java/Spring/Kafka/WebFlux: watch race conditions, reactive-chain mistakes, retry/circuit-breaker semantics, idempotency, message ordering.",
-			"Propose a concrete check or test that would catch each finding, not a fix to merge.",
-		],
-	},
-};
-
 export function panelPrompt(input: { packet: string; role: string; surface: ScrutinySurface; panelMode?: PanelMode }): string {
 	if (input.surface === "verify") throw new Error("verify surface has no panel prompt");
-	const spec = SURFACE_SPECS[input.surface];
+	const spec = SURFACE_PROMPT_SPECS[input.surface];
 	const panelMode = input.panelMode ?? SURFACE_DEFAULTS[input.surface].panelMode ?? "roles";
 	const frame = panelMode === "replicate"
 		? `${spec.heading} Panel mode: replicate. Every panelist receives this same prompt; model priors provide diversity.`
@@ -150,16 +103,6 @@ export function judgePrompt(input: { packet: string; panelMode?: PanelMode; resp
 		responses,
 	].join("\n");
 }
-
-type LensSet = string[];
-
-const SURFACE_LENSES: Record<Exclude<ScrutinySurface, "verify">, LensSet> = {
-	consult: ["first-pass analyst", "skeptical reviewer", "synthesizer", "edge-case hunter"],
-	hypotheses: ["most-likely-cause investigator", "alternative-cause skeptic", "distinguishing-test designer", "environment/config examiner"],
-	criteria: ["acceptance-criteria author", "edge-case author", "backward-compatibility reviewer", "migration/test-case author"],
-	"repo-map": ["call-path mapper", "api/symbol mapper", "test/invariant mapper", "config/build mapper"],
-	risks: ["concurrency reviewer", "reactive-chain reviewer", "api-compatibility reviewer", "security reviewer", "performance reviewer", "data-migration reviewer", "null/error-handling reviewer", "flaky-test reviewer"],
-};
 
 export function panelRoles(members: PanelMember[], surface: ScrutinySurface): Array<{ model: string; role: string; thinking?: PanelMember["thinking"] }> {
 	if (surface === "verify") return [];

@@ -3,6 +3,34 @@ export type PanelMode = "replicate" | "roles";
 export type ScrutinyStatus = "pending" | "running" | "ready" | "failed";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export type ScoutCandidate = {
+	/** Stable id assigned in ranked order (c0, c1, ...). Used by packet preview to toggle candidates. */
+	id: string;
+	kind: "file" | "match" | "prior";
+	title: string;
+	score: number;
+	why: string[];
+	preview?: string;
+	/** Present on prior candidates whose referenced file hashes no longer match. */
+	stale?: boolean;
+};
+
+export type ScoutGap = {
+	id: string;
+	severity: "warn" | "info";
+	message: string;
+};
+
+export type ScoutReport = {
+	surface: ScrutinySurface;
+	skipped: boolean;
+	skipReason?: string;
+	anchors: { files: string[]; symbols: string[]; terms: string[]; reasons: string[] };
+	candidates: ScoutCandidate[];
+	priorCount: number;
+	gaps: ScoutGap[];
+};
+
 export type ScrutinyUsage = {
 	input: number;
 	output: number;
@@ -71,6 +99,7 @@ export type ScrutinyRunResult = {
 	judge?: PanelResponse;
 	analysis?: ScrutinyAnalysis;
 	verify?: VerifyReport;
+	scout?: ScoutReport;
 	startedAt: number;
 	endedAt: number;
 	durationMs: number;
@@ -92,6 +121,7 @@ export type ScrutinySummary = {
 	risks: string[];
 	contradictions: string[];
 	missingContext: string[];
+	scoutGaps?: string[];
 	sourceRefs: string[];
 	fileHashes: Record<string, string>;
 	resultPath: string;

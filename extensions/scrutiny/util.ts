@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import type { ScrutinyAnalysis, ScrutinyUsage } from "./types.js";
 
 export function createRunId(): string {
@@ -87,10 +86,6 @@ export function parseAnalysisJson(text: string): ScrutinyAnalysis | undefined {
 
 export function safeMkdir(dir: string): void {
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-}
-
-export function scrutinyDataDir(cwd: string): string {
-	return path.join(cwd, ".pi", "scrutiny");
 }
 
 function stripFence(text: string): string | undefined {

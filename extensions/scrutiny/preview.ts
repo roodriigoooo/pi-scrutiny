@@ -1,13 +1,16 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { ScrutinySurface } from "./types.js";
-import { formatTokens, truncate } from "./util.js";
+import type { ScoutCandidate, ScoutReport, ScrutinySurface } from "./types.js";
+import { SURFACE_DEFAULTS } from "./surfaces.js";
+import { pruneScoutCandidates } from "./scout.js";
+import { formatTokens } from "./util.js";
 
 export type PacketPreviewInput = {
 	runId: string;
 	surface: ScrutinySurface;
 	packet: string;
+	scout?: ScoutReport;
 	panelCount: number;
 	judgeRan: boolean;
 	verifyRan: boolean;
@@ -34,25 +37,16 @@ type PacketStats = {
 	replicatedTokens: number;
 	sections: string[];
 	hasGit: boolean;
-	scout?: string;
-	scoutCandidates: string[];
+	candidateCount: number;
 	priorCount: number;
 	possibleGaps: string[];
-};
-
-type CandidateBlock = {
-	id: number;
-	title: string;
-	lines: string[];
-	start: number;
-	end: number;
 };
 
 class PacketPreview implements Component {
 	private showPacket = false;
 	private selected = 0;
-	private readonly candidates: CandidateBlock[];
-	private readonly disabled = new Set<number>();
+	private readonly candidates: ScoutCandidate[];
+	private readonly excluded = new Set<string>();
 
 	constructor(
 		private readonly tui: TUI,
@@ -60,7 +54,7 @@ class PacketPreview implements Component {
 		private readonly input: PacketPreviewInput,
 		private readonly done: (value: string | null) => void,
 	) {
-		this.candidates = extractCandidateBlocks(input.packet);
+		this.candidates = input.scout?.candidates ?? [];
 	}
 
 	handleInput(data: string): void {
@@ -77,8 +71,8 @@ class PacketPreview implements Component {
 		if (matchesKey(data, Key.space)) {
 			const candidate = this.candidates[this.selected];
 			if (candidate) {
-				if (this.disabled.has(candidate.id)) this.disabled.delete(candidate.id);
-				else this.disabled.add(candidate.id);
+				if (this.excluded.has(candidate.id)) this.excluded.delete(candidate.id);
+				else this.excluded.add(candidate.id);
 				return this.rerender();
 			}
 		}
@@ -96,8 +90,8 @@ class PacketPreview implements Component {
 		const warning = (s: string) => this.theme.fg("warning", s);
 		const success = (s: string) => this.theme.fg("success", s);
 		const packet = this.currentPacket();
-		const stats = analyzePacket(packet, this.input.panelCount);
-		const enabledCount = this.candidates.length - this.disabled.size;
+		const stats = computeStats(packet, this.input.panelCount, this.input.surface, this.input.scout, this.excluded);
+		const enabledCount = this.candidates.length - this.excluded.size;
 
 		lines.push(topBorder(w, `${accent("scrutiny packet preview")} ${dim(this.input.runId)}`, this.theme));
 		lines.push(frameLine(`${accent(this.input.surface)} ${dim("pre-spend gate · exact packet built, panel not started")}`, w, this.theme));
@@ -107,12 +101,13 @@ class PacketPreview implements Component {
 
 		lines.push(frameLine(`${accent("included")} scout candidates ${enabledCount}/${this.candidates.length} · prior runs ${stats.priorCount} · git ${stats.hasGit ? success("on") : dim("off")}`, w, this.theme));
 		if (this.candidates.length === 0) {
-			lines.push(frameLine(dim("  no toggleable scout candidates in packet"), w, this.theme));
+			const note = this.input.scout?.skipped ? dim("  scout skipped: no anchors found") : dim("  no toggleable scout candidates in packet");
+			lines.push(frameLine(note, w, this.theme));
 		} else {
 			for (const item of visibleWindow(this.candidates, this.selected, 7)) {
 				const candidate = item.row;
 				const selected = item.index === this.selected;
-				const enabled = !this.disabled.has(candidate.id);
+				const enabled = !this.excluded.has(candidate.id);
 				const prefix = selected ? accent(">") : dim(" ");
 				const box = enabled ? success("[x]") : dim("[ ]");
 				const text = enabled ? candidate.title : dim(candidate.title);
@@ -144,8 +139,8 @@ class PacketPreview implements Component {
 	invalidate(): void {}
 
 	private currentPacket(): string {
-		if (this.disabled.size === 0) return this.input.packet;
-		return applyCandidatePruning(this.input.packet, this.candidates, this.disabled);
+		if (this.excluded.size === 0 || !this.input.scout) return this.input.packet;
+		return pruneScoutCandidates(this.input.packet, this.input.scout, this.excluded);
 	}
 
 	private rerender(): void {
@@ -153,71 +148,23 @@ class PacketPreview implements Component {
 	}
 }
 
-function analyzePacket(packet: string, panelCount: number): PacketStats {
+function computeStats(packet: string, panelCount: number, surface: ScrutinySurface, scout: ScoutReport | undefined, excluded: ReadonlySet<string>): PacketStats {
 	const packetTokens = Math.ceil(packet.length / 4);
 	const sections = [...packet.matchAll(/^##\s+(.+)$/gm)].map((match) => match[1].trim());
 	const hasGit = /^## Git working tree$/m.test(packet);
-	const scout = section(packet, "Context scout");
-	const scoutCandidates = scout ? scout.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter((line) => line.startsWith("- "))
-		.map((line) => truncate(line.replace(/^-\s+/, ""), 180)) : [];
-	const priorCount = scoutCandidates.filter((line) => /\[prior;/.test(line)).length;
+	const candidateCount = scout?.candidates.length ?? 0;
+	const priorCount = scout?.priorCount ?? 0;
 	const possibleGaps: string[] = [];
-	if (!scout) possibleGaps.push("no context scout section found");
-	else if (/skipped: no .*anchor/i.test(scout)) possibleGaps.push("no anchors found; packet may be too abstract");
-	else if (/no local candidates found/i.test(scout)) possibleGaps.push("anchors found, but no local candidates matched");
-	else if (/preview pruning: all scout candidates hidden/i.test(scout)) possibleGaps.push("all scout candidates pruned before panel run");
-	if (scout && scoutCandidates.length > 10) possibleGaps.push("many scout candidates; consider narrower scope if result feels noisy");
-	if (scout && !/test file|tests?\//i.test(scout)) possibleGaps.push("no obvious tests surfaced by scout");
-	if (scout && !/doc\/config path|README|CONTEXT|docs\//i.test(scout)) possibleGaps.push("no docs/config/project-frame snippets surfaced yet");
-	if (!hasGit) possibleGaps.push("git diff not included for this surface/run");
-	return { packetTokens, replicatedTokens: packetTokens * Math.max(1, panelCount), sections, hasGit, scout, scoutCandidates, priorCount, possibleGaps };
-}
-
-function extractCandidateBlocks(packet: string): CandidateBlock[] {
-	const lines = packet.split(/\r?\n/);
-	const scoutStart = lines.findIndex((line) => line.trim() === "## Context scout");
-	if (scoutStart < 0) return [];
-	const scoutEnd = lines.findIndex((line, index) => index > scoutStart && /^##\s+/.test(line));
-	const end = scoutEnd < 0 ? lines.length : scoutEnd;
-	const candidates: CandidateBlock[] = [];
-	for (let i = scoutStart + 1; i < end; i++) {
-		if (!lines[i].trim().startsWith("- ")) continue;
-		let blockEnd = i + 1;
-		while (blockEnd < end && !lines[blockEnd].trim().startsWith("- ") && !/^#{2,3}\s+/.test(lines[blockEnd])) blockEnd++;
-		const blockLines = lines.slice(i, blockEnd);
-		candidates.push({
-			id: i,
-			title: truncate(blockLines.join(" ").replace(/^-\s+/, "").replace(/\s+/g, " "), 180),
-			lines: blockLines,
-			start: i,
-			end: blockEnd,
-		});
+	if (scout?.skipped) {
+		possibleGaps.push(scout.skipReason ?? "scout skipped: no anchors found");
+	} else if (scout) {
+		for (const gap of scout.gaps) possibleGaps.push(gap.message);
+		if (scout.candidates.length > 0 && excluded.size >= scout.candidates.length) possibleGaps.push("all scout candidates pruned before panel run");
+	} else if (surface !== "verify") {
+		possibleGaps.push("no context scout section found");
 	}
-	return candidates;
-}
-
-function applyCandidatePruning(packet: string, candidates: CandidateBlock[], disabled: Set<number>): string {
-	const lines = packet.split(/\r?\n/);
-	const remove = new Set<number>();
-	for (const candidate of candidates) {
-		if (!disabled.has(candidate.id)) continue;
-		for (let i = candidate.start; i < candidate.end; i++) remove.add(i);
-	}
-	const output: string[] = [];
-	let noteInserted = false;
-	for (let i = 0; i < lines.length; i++) {
-		if (remove.has(i)) continue;
-		output.push(lines[i]);
-		if (!noteInserted && lines[i].trim() === "### Candidate context") {
-			const hidden = disabled.size;
-			const all = hidden >= candidates.length;
-			output.push(all ? `preview pruning: all scout candidates hidden before panel run.` : `preview pruning: ${hidden} scout candidate(s) hidden before panel run.`);
-			noteInserted = true;
-		}
-	}
-	return output.join("\n");
+	if (!hasGit && SURFACE_DEFAULTS[surface].includeGitDiff) possibleGaps.push("git diff not included for this surface/run");
+	return { packetTokens, replicatedTokens: packetTokens * Math.max(1, panelCount), sections, hasGit, candidateCount, priorCount, possibleGaps };
 }
 
 function visibleWindow<T>(items: T[], selected: number, size: number): Array<{ row: T; index: number }> {
@@ -225,19 +172,14 @@ function visibleWindow<T>(items: T[], selected: number, size: number): Array<{ r
 	return items.slice(start, start + size).map((row, offset) => ({ row, index: start + offset }));
 }
 
-function section(packet: string, heading: string): string | undefined {
-	const lines = packet.split(/\r?\n/);
-	const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
-	if (start < 0) return undefined;
-	const next = lines.findIndex((line, index) => index > start && /^##\s+/.test(line));
-	return lines.slice(start + 1, next < 0 ? undefined : next).join("\n").trim();
-}
-
 function packetExcerpt(packet: string): string[] {
 	return packet
 		.split(/\r?\n/)
 		.filter((line) => /^#|^surface:|^cwd:|^anchors:|^files:|^symbols:|^terms:|^preview pruning:|^- /.test(line.trim()))
-		.map((line) => truncate(line, 220));
+		.map((line) => {
+			const trimmed = line.length > 220 ? `${line.slice(0, 220)}…` : line;
+			return trimmed;
+		});
 }
 
 function topBorder(width: number, title: string, theme: Theme): string {
