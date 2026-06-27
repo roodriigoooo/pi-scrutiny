@@ -74,6 +74,7 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 	const symbols = limit(extractSymbols(searchableText), MAX_ITEMS);
 	const keywords = limit(extractKeywords([prompt, analysisText, files.join(" ")].join("\n")), MAX_ITEMS);
 	const missingContext = limit(extractMissingContext(result.responses, result.analysis?.blind_spots), 8);
+	const scoutGaps = result.scout?.gaps.length ? limit(result.scout.gaps.map((gap) => gap.message), 8) : undefined;
 	const fileHashes = await hashReferencedFiles(cwd, files);
 	const verifyPath = result.verify && await exists(path.join(runDir, "verify.json")) ? rel(cwd, path.join(runDir, "verify.json")) : undefined;
 	const responsesPath = await exists(path.join(runDir, "responses.json")) ? rel(cwd, path.join(runDir, "responses.json")) : undefined;
@@ -96,6 +97,7 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 		risks: limit(result.analysis?.risks ?? [], 8).map((item) => truncate(item, 300)),
 		contradictions: limit(extractContradictions(result), 6),
 		missingContext,
+		scoutGaps,
 		sourceRefs,
 		fileHashes,
 		resultPath: rel(cwd, path.join(runDir, "result.json")),

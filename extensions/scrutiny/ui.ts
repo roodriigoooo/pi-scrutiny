@@ -241,19 +241,13 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 }
 
 function contextStats(result: ScrutinyRunResult): { hasContext: boolean; candidates: number; memory: number; gaps: number } {
-	const packet = result.packet ?? "";
-	const scout = /^## Context scout\b/m.test(packet);
-	const candidateLines = section(packet, "Context scout")
-		?.split(/\r?\n/)
-		.filter((line) => /^-\s+/.test(line.trim())) ?? [];
-	const memory = candidateLines.filter((line) => /\[prior;/i.test(line) || /\bscr_[a-z0-9]/i.test(line)).length;
-	const scoutGaps = /\b(skipped:|no local candidates found|ask user to choose scope|inspect scope manually)\b/i.test(packet) ? 1 : 0;
+	const scout = result.scout;
 	const missing = missingContextSignals(result);
 	return {
-		hasContext: scout || missing > 0,
-		candidates: candidateLines.length,
-		memory,
-		gaps: scoutGaps + missing,
+		hasContext: Boolean(scout) || missing > 0,
+		candidates: scout?.candidates.length ?? 0,
+		memory: scout?.priorCount ?? 0,
+		gaps: (scout?.gaps.length ?? 0) + missing,
 	};
 }
 
@@ -267,14 +261,6 @@ function missingContextSignals(result: ScrutinyRunResult): number {
 		.filter((line) => !/^Deterministic analysis does not infer/i.test(line))
 		.filter((line) => /\b(missing|not shown|not in (the )?packet|insufficient|unknown|cannot determine|can't determine|need(?:s)? to inspect|must inspect|would need|need more evidence|not enough evidence)\b/i.test(line));
 	return new Set(lines.map((line) => truncate(line, 240))).size;
-}
-
-function section(markdown: string, heading: string): string | undefined {
-	const lines = markdown.split(/\r?\n/);
-	const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
-	if (start < 0) return undefined;
-	const next = lines.findIndex((line, index) => index > start && /^##\s+/.test(line));
-	return lines.slice(start + 1, next < 0 ? undefined : next).join("\n").trim();
 }
 
 function pushList(lines: string[], title: string, items: string[] | undefined): void {

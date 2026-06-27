@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ScrutinyParams, ScrutinySummary, ScrutinySurface } from "./types.js";
+import type { ScrutinyParams, ScrutinySummary, ScrutinySurface, ScoutCandidate, ScoutGap, ScoutReport } from "./types.js";
 import { scrutinyDataDir, truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
@@ -13,49 +13,126 @@ type Anchors = {
 	reasons: string[];
 };
 
-type Candidate = {
-	kind: "file" | "match" | "prior";
-	title: string;
-	score: number;
-	why: string[];
-	preview?: string;
-};
-
 const MAX_SCOUT_CHARS = 4_000;
 const MAX_CANDIDATES = 12;
 const MAX_RG_MATCHES = 80;
 const MAX_PATTERN_PARTS = 12;
 const MAX_DIFF_FILES = 30;
 const MAX_PRIOR_RUNS = 3;
+const SCOUT_HEADING = "Context scout";
 
-export async function buildContextScoutSection(input: {
+const SKIP_REASON_NO_ANCHORS = "skipped: no `@file`, path, symbol-like term, prompt keyword, or git diff file found. ask user to choose scope before broad repo scan.";
+
+/**
+ * Cheap local anchor scan. Returns structured data (anchors, ranked candidates
+ * with stable ids, prior-run count, and first-class gaps). Packet rendering and
+ * packet-preview pruning consume this report instead of parsing Markdown back
+ * into facts (issues #4, #5, #6).
+ */
+export async function runContextScout(input: {
 	params: ScrutinyParams;
 	surface: ScrutinySurface;
 	cwd: string;
 	exec: ExecLike;
 	signal?: AbortSignal;
-}): Promise<string | undefined> {
-	if (input.surface === "verify") return undefined;
+}): Promise<ScoutReport> {
+	const surface = input.surface;
+	if (surface === "verify") {
+		return { surface, skipped: true, skipReason: "verify surface has no context scout", anchors: emptyAnchors(), candidates: [], priorCount: 0, gaps: [] };
+	}
+
 	const explicit = extractExplicitAnchors(`${input.params.prompt}\n${input.params.context ?? ""}`);
 	const diffFiles = await readDiffFiles(input.exec, input.signal);
 	const anchors = buildAnchors({ text: input.params.prompt, explicitFiles: explicit.files, explicitSymbols: explicit.symbols, diffFiles });
 
 	if (anchors.files.length === 0 && anchors.symbols.length === 0 && anchors.terms.length === 0) {
-		return [
-			"## Context scout",
-			"skipped: no `@file`, path, symbol-like term, prompt keyword, or git diff file found. ask user to choose scope before broad repo scan.",
-		].join("\n");
+		return {
+			surface,
+			skipped: true,
+			skipReason: SKIP_REASON_NO_ANCHORS,
+			anchors,
+			candidates: [],
+			priorCount: 0,
+			gaps: [{ id: "no-anchors", severity: "warn", message: "no anchors found; ask user to choose scope before broad repo scan" }],
+		};
 	}
 
-	const candidates: Candidate[] = [];
-	for (const file of diffFiles.slice(0, MAX_DIFF_FILES)) candidates.push({ kind: "file", title: file, score: 10, why: ["git diff file"] });
-	for (const file of explicit.files) candidates.push({ kind: "file", title: file, score: 12, why: ["explicit file anchor"] });
-	candidates.push(...await rgCandidates(input.cwd, input.exec, anchors, input.signal));
-	candidates.push(...await pathCandidates(input.cwd, input.exec, anchors, input.signal));
-	candidates.push(...await priorRunCandidates(input.cwd, anchors));
+	const raw: ScoutCandidate[] = [];
+	for (const file of diffFiles.slice(0, MAX_DIFF_FILES)) raw.push({ id: "", kind: "file", title: file, score: 10, why: ["git diff file"] });
+	for (const file of explicit.files) raw.push({ id: "", kind: "file", title: file, score: 12, why: ["explicit file anchor"] });
+	raw.push(...await rgCandidates(input.cwd, input.exec, anchors, input.signal));
+	raw.push(...await pathCandidates(input.cwd, input.exec, anchors, input.signal));
+	raw.push(...await priorRunCandidates(input.cwd, anchors));
 
-	const ranked = dedupeCandidates(candidates).sort((a, b) => b.score - a.score || a.title.localeCompare(b.title)).slice(0, MAX_CANDIDATES);
-	return renderScout(anchors, ranked);
+	const ranked = dedupeCandidates(raw).sort((a, b) => b.score - a.score || a.title.localeCompare(b.title)).slice(0, MAX_CANDIDATES);
+	ranked.forEach((candidate, index) => { candidate.id = `c${index}`; });
+	const priorCount = ranked.filter((candidate) => candidate.kind === "prior").length;
+	const gaps = computeGaps(ranked, priorCount);
+
+	return { surface, skipped: false, anchors, candidates: ranked, priorCount, gaps };
+}
+
+/** Edge rendering: turns a ScoutReport into the `## Context scout` packet section. */
+export function renderScoutMarkdown(report: ScoutReport, excludedIds?: ReadonlySet<string>): string {
+	if (report.skipped) {
+		return truncate(["## Context scout", report.skipReason ?? "skipped: no anchors found."].join("\n"), MAX_SCOUT_CHARS);
+	}
+	const lines: string[] = [];
+	lines.push("## Context scout");
+	lines.push("cheap local anchor scan. source for orientation only; not authority.");
+	lines.push(`anchors: ${report.anchors.reasons.join(", ") || "none"}`);
+	pushInline(lines, "files", report.anchors.files, 8);
+	pushInline(lines, "symbols", report.anchors.symbols, 8);
+	pushInline(lines, "terms", report.anchors.terms, 8);
+	lines.push("");
+
+	if (report.candidates.length === 0) {
+		lines.push("no local candidates found from these anchors. if task depends on broader architecture, inspect scope manually before trusting panel output.");
+		return truncate(lines.join("\n"), MAX_SCOUT_CHARS);
+	}
+
+	const included = report.candidates.filter((candidate) => !excludedIds?.has(candidate.id));
+	if (included.length === 0) {
+		lines.push("preview pruning: all scout candidates hidden before panel run.");
+		return truncate(lines.join("\n"), MAX_SCOUT_CHARS);
+	}
+	lines.push("### Candidate context");
+	for (const candidate of included) {
+		lines.push(`- ${candidate.title} [${candidate.kind}; score ${candidate.score}; why: ${candidate.why.join(", ") || "anchor"}]`);
+		if (candidate.preview) lines.push(`  ${truncate(candidate.preview.replace(/\s+/g, " "), 220)}`);
+	}
+	if (excludedIds && excludedIds.size > 0) lines.push(`preview pruning: ${excludedIds.size} scout candidate(s) hidden before panel run.`);
+	return truncate(lines.join("\n"), MAX_SCOUT_CHARS);
+}
+
+/**
+ * Rebuild the exact packet with the given scout candidates excluded. Toggles by
+ * stable candidate id and re-renders the scout section, so preview pruning no
+ * longer slices Markdown blocks (issue #5).
+ */
+export function pruneScoutCandidates(packet: string, report: ScoutReport, excludedIds: ReadonlySet<string>): string {
+	if (excludedIds.size === 0 || report.skipped) return packet;
+	return replaceSection(packet, SCOUT_HEADING, renderScoutMarkdown(report, excludedIds));
+}
+
+function computeGaps(candidates: ScoutCandidate[], priorCount: number): ScoutGap[] {
+	const gaps: ScoutGap[] = [];
+	if (candidates.length === 0) {
+		gaps.push({ id: "no-candidates", severity: "warn", message: "anchors found, but no local candidates matched" });
+		return gaps;
+	}
+	const hasTests = candidates.some((candidate) => candidate.why.includes("test file"));
+	const hasDocs = candidates.some((candidate) => candidate.why.includes("doc/config path"));
+	if (!hasTests) gaps.push({ id: "no-tests", severity: "warn", message: "no tests surfaced by scout" });
+	if (!hasDocs) gaps.push({ id: "no-docs-config", severity: "warn", message: "no docs/config/project-frame snippets surfaced yet" });
+	if (candidates.length > 10) gaps.push({ id: "many-candidates", severity: "info", message: "many scout candidates; consider narrower scope if result feels noisy" });
+	const onlyStaleMemory = priorCount > 0 && candidates.every((candidate) => candidate.kind === "prior" && candidate.stale);
+	if (onlyStaleMemory) gaps.push({ id: "only-stale-memory", severity: "warn", message: "only stale prior scrutiny memory surfaced; re-check before trusting" });
+	return gaps;
+}
+
+function emptyAnchors(): Anchors {
+	return { files: [], symbols: [], terms: [], reasons: [] };
 }
 
 function buildAnchors(input: { text: string; explicitFiles: string[]; explicitSymbols: string[]; diffFiles: string[] }): Anchors {
@@ -112,7 +189,7 @@ async function readDiffFiles(exec: ExecLike, signal?: AbortSignal): Promise<stri
 	}
 }
 
-async function rgCandidates(cwd: string, exec: ExecLike, anchors: Anchors, signal?: AbortSignal): Promise<Candidate[]> {
+async function rgCandidates(cwd: string, exec: ExecLike, anchors: Anchors, signal?: AbortSignal): Promise<ScoutCandidate[]> {
 	const patternParts = unique([...anchors.symbols, ...anchors.terms]).slice(0, MAX_PATTERN_PARTS);
 	if (patternParts.length === 0) return [];
 	const pattern = patternParts.map(escapeRegex).join("|");
@@ -129,8 +206,8 @@ async function rgCandidates(cwd: string, exec: ExecLike, anchors: Anchors, signa
 	}
 }
 
-function parseRgMatches(cwd: string, stdout: string, anchors: Anchors): Candidate[] {
-	const candidates: Candidate[] = [];
+function parseRgMatches(cwd: string, stdout: string, anchors: Anchors): ScoutCandidate[] {
+	const candidates: ScoutCandidate[] = [];
 	const anchorFiles = new Set(anchors.files);
 	const terms = new Set([...anchors.terms, ...anchors.symbols].map((item) => item.toLowerCase()));
 	for (const line of stdout.split(/\r?\n/)) {
@@ -155,12 +232,12 @@ function parseRgMatches(cwd: string, stdout: string, anchors: Anchors): Candidat
 		}
 		if (isTestPath(file)) { score += 3; why.push("test file"); }
 		if (isDocConfigPath(file)) { score += 2; why.push("doc/config path"); }
-		candidates.push({ kind: "match", title: `${file}${lineNumber ? `:${lineNumber}` : ""}`, score, why: unique(why).slice(0, 5), preview: text });
+		candidates.push({ id: "", kind: "match", title: `${file}${lineNumber ? `:${lineNumber}` : ""}`, score, why: unique(why).slice(0, 5), preview: text });
 	}
 	return candidates;
 }
 
-async function pathCandidates(cwd: string, exec: ExecLike, anchors: Anchors, signal?: AbortSignal): Promise<Candidate[]> {
+async function pathCandidates(cwd: string, exec: ExecLike, anchors: Anchors, signal?: AbortSignal): Promise<ScoutCandidate[]> {
 	const terms = unique([...anchors.terms, ...anchors.symbols.map((symbol) => symbol.toLowerCase())]);
 	if (terms.length === 0) return [];
 	try {
@@ -170,19 +247,19 @@ async function pathCandidates(cwd: string, exec: ExecLike, anchors: Anchors, sig
 			.map(normalizeFile)
 			.filter((file): file is string => Boolean(file))
 			.filter((file) => isDocConfigPath(file) || isTestPath(file))
-			.map((file): Candidate | undefined => {
+			.map((file): ScoutCandidate | undefined => {
 				const lower = file.toLowerCase();
 				const hits = terms.filter((term) => lower.includes(term));
-				return hits.length ? { kind: "file", title: file, score: 4 + hits.length + (isTestPath(file) ? 2 : 0), why: [`path:${hits.slice(0, 3).join(",")}`, isTestPath(file) ? "test file" : "doc/config path"].filter(Boolean) } : undefined;
+				return hits.length ? { id: "", kind: "file", title: file, score: 4 + hits.length + (isTestPath(file) ? 2 : 0), why: [`path:${hits.slice(0, 3).join(",")}`, isTestPath(file) ? "test file" : "doc/config path"].filter(Boolean) } : undefined;
 			})
-			.filter((item): item is Candidate => item !== undefined)
+			.filter((item): item is ScoutCandidate => item !== undefined)
 			.slice(0, 30);
 	} catch {
 		return [];
 	}
 }
 
-async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<Candidate[]> {
+async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<ScoutCandidate[]> {
 	const indexPath = path.join(scrutinyDataDir(cwd), "index.jsonl");
 	let lines: string[];
 	try {
@@ -190,7 +267,7 @@ async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<Candid
 	} catch {
 		return [];
 	}
-	const candidates: Candidate[] = [];
+	const candidates: ScoutCandidate[] = [];
 	for (const line of lines) {
 		let summary: ScrutinySummary;
 		try { summary = JSON.parse(line) as ScrutinySummary; } catch { continue; }
@@ -203,14 +280,17 @@ async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<Candid
 		const keywordHits = summary.keywords.filter((keyword) => anchors.terms.includes(keyword));
 		if (keywordHits.length) { score += keywordHits.length; why.push(`keyword:${keywordHits.slice(0, 3).join(",")}`); }
 		const freshness = await summaryFreshness(cwd, summary);
-		if (freshness === "stale") score -= 4;
+		const stale = freshness === "stale";
+		if (stale) score -= 4;
 		if (score <= 0) continue;
 		candidates.push({
+			id: "",
 			kind: "prior",
 			title: `${summary.runId} · ${summary.surface} · ${summary.status}${freshness ? ` · ${freshness}` : ""}`,
 			score,
 			why,
 			preview: truncate([summary.prompt, ...summary.signals.slice(0, 2), ...summary.risks.slice(0, 2)].filter(Boolean).join("; "), 260),
+			stale,
 		});
 	}
 	return candidates.sort((a, b) => b.score - a.score).slice(0, MAX_PRIOR_RUNS);
@@ -232,8 +312,8 @@ async function summaryFreshness(cwd: string, summary: ScrutinySummary): Promise<
 	return "fresh";
 }
 
-function dedupeCandidates(candidates: Candidate[]): Candidate[] {
-	const byTitle = new Map<string, Candidate>();
+function dedupeCandidates(candidates: ScoutCandidate[]): ScoutCandidate[] {
+	const byTitle = new Map<string, ScoutCandidate>();
 	for (const candidate of candidates) {
 		const existing = byTitle.get(candidate.title);
 		if (!existing) byTitle.set(candidate.title, candidate);
@@ -242,30 +322,21 @@ function dedupeCandidates(candidates: Candidate[]): Candidate[] {
 			score: Math.max(existing.score, candidate.score),
 			why: unique([...existing.why, ...candidate.why]).slice(0, 6),
 			preview: existing.preview ?? candidate.preview,
+			stale: existing.stale ?? candidate.stale,
 		});
 	}
 	return [...byTitle.values()];
 }
 
-function renderScout(anchors: Anchors, candidates: Candidate[]): string {
-	const lines: string[] = [];
-	lines.push("## Context scout");
-	lines.push("cheap local anchor scan. source for orientation only; not authority.");
-	lines.push(`anchors: ${anchors.reasons.join(", ") || "none"}`);
-	pushInline(lines, "files", anchors.files, 8);
-	pushInline(lines, "symbols", anchors.symbols, 8);
-	pushInline(lines, "terms", anchors.terms, 8);
-	lines.push("");
-	if (candidates.length === 0) {
-		lines.push("no local candidates found from these anchors. if task depends on broader architecture, inspect scope manually before trusting panel output.");
-		return lines.join("\n");
+function replaceSection(packet: string, heading: string, newBody: string): string {
+	const lines = packet.split(/\r?\n/);
+	const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+	if (start < 0) return packet;
+	let end = lines.length;
+	for (let i = start + 1; i < lines.length; i++) {
+		if (/^##\s+/.test(lines[i])) { end = i; break; }
 	}
-	lines.push("### Candidate context");
-	for (const candidate of candidates) {
-		lines.push(`- ${candidate.title} [${candidate.kind}; score ${candidate.score}; why: ${candidate.why.join(", ") || "anchor"}]`);
-		if (candidate.preview) lines.push(`  ${truncate(candidate.preview.replace(/\s+/g, " "), 220)}`);
-	}
-	return truncate(lines.join("\n"), MAX_SCOUT_CHARS);
+	return [...lines.slice(0, start), ...newBody.split(/\r?\n/), ...lines.slice(end)].join("\n");
 }
 
 function pushInline(lines: string[], label: string, items: string[], limit: number): void {

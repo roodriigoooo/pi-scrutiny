@@ -7,7 +7,7 @@ import { buildTaskPacket, judgePrompt, panelPrompt, panelRoles } from "./packet.
 import { runModelTask } from "./runner.js";
 import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
 import { writeRunResult } from "./summary.js";
-import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
+import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, ScoutReport, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
 import { createRunId, formatDuration, formatTokens, scrutinyDataDir, parseAnalysisJson, safeMkdir, truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
@@ -21,7 +21,7 @@ type RunScrutinyInput = {
 	signal?: AbortSignal;
 	onProgress?: (progress: ScrutinyRunProgress) => void;
 	projectTrusted?: boolean;
-	confirmPacket?: (input: { runId: string; surface: ScrutinySurface; packet: string; panelCount: number; judgeRan: boolean; verifyRan: boolean }) => Promise<string | null>;
+	confirmPacket?: (input: { runId: string; surface: ScrutinySurface; packet: string; scout?: ScoutReport; panelCount: number; judgeRan: boolean; verifyRan: boolean }) => Promise<string | null>;
 };
 
 const PANEL_EXCERPT_CHARS = 2_400;
@@ -85,9 +85,11 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 
 	recordRunStart({ runId, surface, status: "running", startedAt, runDir });
 
-	let packet = await buildTaskPacket({ params: input.params, surface, cwd: input.cwd, config, exec: input.exec, signal: input.signal });
+	const built = await buildTaskPacket({ params: input.params, surface, cwd: input.cwd, config, exec: input.exec, signal: input.signal });
+	let packet = built.packet;
+	const scout = built.scout;
 	if (input.confirmPacket) {
-		const confirmedPacket = await input.confirmPacket({ runId, surface, packet, panelCount: panelMembers.length, judgeRan: runJudgeByPolicy && Boolean(judgeModel), verifyRan: runVerifyByPolicy });
+		const confirmedPacket = await input.confirmPacket({ runId, surface, packet, scout, panelCount: panelMembers.length, judgeRan: runJudgeByPolicy && Boolean(judgeModel), verifyRan: runVerifyByPolicy });
 		if (!confirmedPacket) {
 			await fs.rm(runDir, { recursive: true, force: true }).catch(() => undefined);
 			releaseRunLock(runId);
@@ -153,6 +155,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 			error: "all panel models failed",
 			packetPath,
 			packet,
+			scout,
 			responses,
 			failed_models: failedModels,
 			startedAt,
@@ -179,6 +182,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 			error: `panel outputs unusable: ${mush}`,
 			packetPath,
 			packet,
+			scout,
 			responses,
 			failed_models: failedModels,
 			startedAt,
@@ -251,6 +255,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		failure_reason: judge && judge.status !== "ok" ? "judge_failed" : undefined,
 		packetPath,
 		packet,
+		scout,
 		responses,
 		failed_models: failedModels,
 		judge,

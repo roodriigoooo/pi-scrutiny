@@ -274,14 +274,15 @@ function renderRow(lines: string[], row: HistoryRow): void {
 	pushCompact(lines, "signals", summary.signals, 3);
 	pushCompact(lines, "risks", summary.risks, 3);
 	pushCompact(lines, "missing", summary.missingContext, 3);
+	pushCompact(lines, "scout-gaps", summary.scoutGaps, 3);
 	pushCompact(lines, "refs", summary.sourceRefs, 5);
 	const paths = [summary.resultPath, summary.surfaceArtifactPath, summary.packetPath, summary.responsesPath, summary.verifyPath].filter(Boolean).join(" · ");
 	if (paths) lines.push(`paths: ${paths}`);
 	lines.push("");
 }
 
-function pushCompact(lines: string[], label: string, items: string[], limit: number): void {
-	if (!items.length) return;
+function pushCompact(lines: string[], label: string, items: string[] | undefined, limit: number): void {
+	if (!items?.length) return;
 	lines.push(`${label}: ${items.slice(0, limit).map((item) => truncate(item, 140)).join("; ")}${items.length > limit ? `; +${items.length - limit}` : ""}`);
 }
 
@@ -415,6 +416,7 @@ class HistoryPicker implements Component, Focusable {
 		pushPreview(lines, this.theme, "signals", s.signals, 2);
 		pushPreview(lines, this.theme, "risks", s.risks, 2);
 		pushPreview(lines, this.theme, "missing", s.missingContext, 2);
+		pushPreview(lines, this.theme, "scout-gaps", s.scoutGaps, 2);
 		pushPreview(lines, this.theme, "paths", [s.resultPath, s.surfaceArtifactPath, s.packetPath, s.responsesPath, s.verifyPath].filter((item): item is string => Boolean(item)), 3);
 		return lines;
 	}
@@ -488,8 +490,8 @@ function isSubsequence(needle: string, haystack: string): boolean {
 	return index >= needle.length;
 }
 
-function pushPreview(lines: string[], theme: Theme, label: string, items: string[], limit: number): void {
-	if (!items.length) return;
+function pushPreview(lines: string[], theme: Theme, label: string, items: string[] | undefined, limit: number): void {
+	if (!items?.length) return;
 	lines.push(`${theme.fg("muted", `${label}:`)} ${items.slice(0, limit).map((item) => truncate(item, 120)).join("; ")}${items.length > limit ? `; +${items.length - limit}` : ""}`);
 }
 
