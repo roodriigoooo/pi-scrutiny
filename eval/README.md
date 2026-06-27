@@ -8,9 +8,14 @@ no internal api coupling. no new dependencies. node native type-stripping (`--ex
 
 ```bash
 npm run eval:smoke          # runs eval/out/{smoke.report.md,json}
+npm run eval:coverage      # unit-level surface catalog coverage (no subprocesses)
 ```
 
 exit code is non-zero if any task fails or errors.
+
+## coverage suite (`eval:coverage`)
+
+not black-box. imports the surface catalog (`extensions/scrutiny/surfaces.ts`) directly and treats `SCRUTINY_SURFACES` as the source of truth, asserting every surface is wired with defaults, prompt specs, lenses, palette hints, action lines, docs, mode lines, and correct prompt→surface routing. also scans extension sources to fail if anyone re-introduces a per-surface table outside the catalog. fast, no model keys, no `pi` subprocesses.
 
 ## what the smoke suite checks (no model keys needed)
 

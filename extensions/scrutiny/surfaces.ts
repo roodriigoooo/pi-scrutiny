@@ -149,10 +149,10 @@ export function panelModeBriefLine(surface: ScrutinySurface, panelMode: PanelMod
  */
 export function inferSurface(prompt: string): ScrutinySurface {
 	const text = prompt.toLowerCase();
-	if (/\b(verify|typecheck|lint|run tests|test suite|does it pass|check the build|ci)\b/.test(text)) return "verify";
-	if (/\b(risk|review the patch|review this change|concurrency|race|reactive|idempoten|circuit.?breaker|security review)\b/.test(text)) return "risks";
-	if (/\b(root cause|why does|debug|intermittent|flaky|bug in|what is causing)\b/.test(text)) return "hypotheses";
-	if (/\b(acceptance criter|edge case|backward.?compat|migrat|spec for|definition of done)\b/.test(text)) return "criteria";
-	if (/\b(repo map|where is|call path|callers of|symbols|trace|how does .* work|navigate the code)\b/.test(text)) return "repo-map";
+	if (/\b(verify|type[ -]?check|lint(?:ing)?|run tests|test suite|does it pass|check the build|ci)\b/.test(text)) return "verify";
+	if (/\b(risks?|review (?:the|this) (?:patch|change)|concurrency|races?|reactive|idempoten(?:t|cy|ce)?|circuit.?breaker|security review)\b/.test(text)) return "risks";
+	if (/\b(root cause|why does|debug(?:ging|ged)?|intermittent|flaky|bug in|what is causing)\b/.test(text)) return "hypotheses";
+	if (/\b(acceptance criteria|edge cases?|backward[ -]?compat(?:ibility)?|migrat(?:e|es|ed|ing|ion|ions)?|spec for|definition of done)\b/.test(text)) return "criteria";
+	if (/\b(repo map|where is|call paths?|callers of|symbols?|traces?|how does .* work|navigate the code)\b/.test(text)) return "repo-map";
 	return "consult";
 }
