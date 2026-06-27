@@ -7,10 +7,15 @@ import {
 	appendSummary,
 	artifactPath,
 	dataDir,
+	deleteAllRuns,
+	deleteRun,
+	findRelatedSummaries,
 	freshness,
 	hashFiles,
 	indexPath,
 	loadSummaries,
+	previewRun,
+	rebuildIndex,
 	runDir,
 	surfaceArtifactFile,
 	writeIndex,
@@ -76,7 +81,7 @@ async function main(): Promise<void> {
 		await fsP.writeFile(fileAbs, "export function withRetry() {}", "utf8");
 		const fileHash = createHash("sha1").update("export function withRetry() {}").digest("hex");
 
-		process.stdout.write(`scrutiny artifacts · 8 checks\n`);
+		process.stdout.write(`scrutiny artifacts · 12 checks\n`);
 
 		await check("layout paths + surfaceArtifactFile", () => {
 			eq(dataDir(cwd), path.join(cwd, ".pi", "scrutiny"), "dataDir");
@@ -156,6 +161,96 @@ async function main(): Promise<void> {
 			}
 		});
 
+		await check("findRelatedSummaries ranks by file/symbol/keyword overlap and caps", async () => {
+			const relCwd = fs.mkdtempSync(path.join(os.tmpdir(), "scrutiny-artifacts-related-"));
+			try {
+				// weight: file 8 > symbol 4 > keyword 1; fileHit ranks above symbolHit despite being older
+				const fileHit = makeSummary("scr_file", 1_000); fileHit.files = ["src/retry.ts"];
+				const symbolHit = makeSummary("scr_sym", 2_000); symbolHit.symbols = ["withRetry"];
+				const noHit = makeSummary("scr_none", 3_000); noHit.files = ["other.ts"]; noHit.symbols = ["other"]; noHit.keywords = ["unrelated"];
+				await appendSummary(relCwd, noHit);
+				await appendSummary(relCwd, symbolHit);
+				await appendSummary(relCwd, fileHit);
+				const related = await findRelatedSummaries(relCwd, { files: ["src/retry.ts"], symbols: ["withRetry"], terms: [] }, 3);
+				assert(related.length === 2, `expected 2 related, got ${related.length}`);
+				eq(related.map((r) => r.summary.runId), ["scr_file", "scr_sym"], "file hit ranks above symbol hit");
+				assert(related[0].why.some((w) => w.startsWith("file:")), "file why present");
+				assert(related[1].why.some((w) => w.startsWith("symbol:")), "symbol why present");
+				const capped = await findRelatedSummaries(relCwd, { files: ["src/retry.ts"], symbols: [], terms: [] }, 1);
+				eq(capped.map((r) => r.summary.runId), ["scr_file"], "cap honored");
+			} finally {
+				fs.rmSync(relCwd, { recursive: true, force: true });
+			}
+		});
+
+		await check("deleteRun removes one dir, rebuilds index, leaves config untouched", async () => {
+			const delCwd = fs.mkdtempSync(path.join(os.tmpdir(), "scrutiny-artifacts-del-"));
+			try {
+				// plant two run dirs with summaries + a config file that must survive
+				for (const runId of ["scr_keep", "scr_drop"]) {
+					const dir = runDir(delCwd, runId);
+					await fsP.mkdir(dir, { recursive: true });
+					await fsP.writeFile(path.join(dir, "summary.json"), JSON.stringify(makeSummary(runId, runId === "scr_keep" ? 1_000 : 2_000)), "utf8");
+					await fsP.writeFile(path.join(dir, "result.json"), "{}", "utf8");
+				}
+				const configFile = path.join(delCwd, ".pi", "scrutiny.json");
+				await fsP.mkdir(path.dirname(configFile), { recursive: true });
+				await fsP.writeFile(configFile, "{\"panel\":[]}", "utf8");
+				await rebuildIndex(delCwd);
+				eq((await loadSummaries(delCwd)).summaries.map((s) => s.runId), ["scr_drop", "scr_keep"], "both indexed before delete");
+				const result = await deleteRun(delCwd, "scr_drop");
+				assert(result.deleted, "deleteRun reports deleted");
+				assert(!fs.existsSync(runDir(delCwd, "scr_drop")), "drop dir gone");
+				assert(fs.existsSync(runDir(delCwd, "scr_keep")), "keep dir survives");
+				assert(fs.existsSync(configFile), "config file survives");
+				const remaining = await loadSummaries(delCwd);
+				eq(remaining.summaries.map((s) => s.runId), ["scr_keep"], "index rebuilt without dropped run");
+				assert(!remaining.rebuilt, "second load reads rebuilt index");
+			} finally {
+				fs.rmSync(delCwd, { recursive: true, force: true });
+			}
+		});
+
+		await check("deleteRun refuses non-scr_ ids and path escapes", async () => {
+			const guardCwd = fs.mkdtempSync(path.join(os.tmpdir(), "scrutiny-artifacts-guard-"));
+			try {
+				const bad = await deleteRun(guardCwd, "../../etc/passwd");
+				assert(!bad.deleted, "escape id not deleted");
+				const nonScr = await deleteRun(guardCwd, "not_a_scr_id");
+				assert(!nonScr.deleted, "non-scr_ id not deleted");
+				const missing = await deleteRun(guardCwd, "scr_nope");
+				assert(!missing.deleted, "missing run not deleted");
+			} finally {
+				fs.rmSync(guardCwd, { recursive: true, force: true });
+			}
+		});
+
+		await check("previewRun reports files+bytes; deleteAllRuns clears runs, empties index, keeps config", async () => {
+			const clrCwd = fs.mkdtempSync(path.join(os.tmpdir(), "scrutiny-artifacts-clear-"));
+			try {
+				const dir = runDir(clrCwd, "scr_one");
+				await fsP.mkdir(dir, { recursive: true });
+				await fsP.writeFile(path.join(dir, "summary.json"), JSON.stringify(makeSummary("scr_one", 1_000)), "utf8");
+				await fsP.writeFile(path.join(dir, "result.json"), "{\"x\":1}", "utf8");
+				const preview = await previewRun(clrCwd, "scr_one");
+				assert(preview.exists, "preview exists");
+				eq(preview.files.sort(), ["result.json", "summary.json"], "preview lists files");
+				assert(preview.bytes > 0, "preview bytes > 0");
+				const configFile = path.join(clrCwd, ".pi", "scrutiny.json");
+				await fsP.mkdir(path.dirname(configFile), { recursive: true });
+				await fsP.writeFile(configFile, "{\"panel\":[]}", "utf8");
+				await rebuildIndex(clrCwd);
+				const cleared = await deleteAllRuns(clrCwd);
+				eq(cleared.deletedCount, 1, "one run cleared");
+				assert(!fs.existsSync(dir), "run dir gone after clear");
+				assert(fs.existsSync(configFile), "config survives clear");
+				eq((await loadSummaries(clrCwd)).summaries, [], "index empty after clear");
+				assert(fs.existsSync(indexPath(clrCwd)), "index file still exists (empty)");
+			} finally {
+				fs.rmSync(clrCwd, { recursive: true, force: true });
+			}
+		});
+
 		await check("no extension re-declares artifact-layout logic outside artifacts.ts", () => {
 			const extDir = path.resolve(process.cwd(), "extensions", "scrutiny");
 			const files = fs.readdirSync(extDir).filter((f) => f.endsWith(".ts") && f !== "artifacts.ts");
@@ -171,6 +266,7 @@ async function main(): Promise<void> {
 				"function parseIndex",
 				"function dedupeSummaries",
 				"function hashFile",
+				"function findRelatedSummaries",
 			];
 			for (const file of files) {
 				const src = fs.readFileSync(path.join(extDir, file), "utf8");

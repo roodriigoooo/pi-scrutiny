@@ -28,6 +28,8 @@
     "eval:coverage": "node --experimental-strip-types eval/coverage.ts",
     "eval:scout": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/scout-test.ts",
     "eval:artifacts": "node --experimental-strip-types eval/artifacts-test.ts",
+    "eval:verify": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/verify-test.ts",
+    "eval:normalize": "node --experimental-strip-types eval/normalize-test.ts",
     "pack:dry": "npm pack --dry-run",
     "release:dry": "npm run check && npm run pack:dry",
     "smoke:help": "pi --no-extensions -e ./extensions/scrutiny.ts --mode json --no-session \"/scrutiny help\""

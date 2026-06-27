@@ -75,6 +75,17 @@ export const SMOKE_SUITE: EvalTask[] = [
 			{ name: "summary json shown", check: (ctx) => ctx.stdout.includes("runId") && ctx.stdout.includes("status") },
 		],
 	},
+	{
+		id: "history-delete-preview",
+		description: "history delete without --yes shows a non-mutating preview",
+		surface: "consult",
+		prompt: "/scrutiny history delete latest",
+		expect: [
+			{ name: "preview header", check: (ctx) => ctx.stdout.includes("# scrutiny history delete (preview)") },
+			{ name: "confirm hint", check: (ctx) => ctx.stdout.includes("--yes") },
+			{ name: "config-untouched note", check: (ctx) => ctx.stdout.includes(".pi/scrutiny.json") },
+		],
+	},
 ];
 
 function readSummary(ctx: Parameters<NonNullable<EvalTask["expect"]>[number]["check"]>[0]): any | undefined {
