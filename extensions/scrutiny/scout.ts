@@ -1,7 +1,6 @@
-import fs from "node:fs/promises";
 import path from "node:path";
-import { freshness, indexPath } from "./artifacts.js";
-import type { ScrutinyParams, ScrutinySummary, ScrutinySurface, ScoutCandidate, ScoutGap, ScoutReport } from "./types.js";
+import { findRelatedSummaries } from "./artifacts.js";
+import type { ScrutinyParams, ScrutinySurface, ScoutCandidate, ScoutGap, ScoutReport } from "./types.js";
 import { truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
@@ -260,41 +259,16 @@ async function pathCandidates(cwd: string, exec: ExecLike, anchors: Anchors, sig
 }
 
 async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<ScoutCandidate[]> {
-	const indexFile = indexPath(cwd);
-	let lines: string[];
-	try {
-		lines = (await fs.readFile(indexFile, "utf8")).split(/\r?\n/).filter(Boolean).slice(-100);
-	} catch {
-		return [];
-	}
-	const candidates: ScoutCandidate[] = [];
-	for (const line of lines) {
-		let summary: ScrutinySummary;
-		try { summary = JSON.parse(line) as ScrutinySummary; } catch { continue; }
-		const why: string[] = [];
-		let score = 0;
-		const fileHits = summary.files.filter((file) => anchors.files.includes(file));
-		if (fileHits.length) { score += 8 * fileHits.length; why.push(`file:${fileHits.slice(0, 2).join(",")}`); }
-		const symbolHits = summary.symbols.filter((symbol) => anchors.symbols.includes(symbol));
-		if (symbolHits.length) { score += 4 * symbolHits.length; why.push(`symbol:${symbolHits.slice(0, 2).join(",")}`); }
-		const keywordHits = summary.keywords.filter((keyword) => anchors.terms.includes(keyword));
-		if (keywordHits.length) { score += keywordHits.length; why.push(`keyword:${keywordHits.slice(0, 3).join(",")}`); }
-		const f = await freshness(cwd, summary);
-		const fresh = f.freshness === "unknown" ? undefined : f.freshness;
-		const stale = f.freshness === "stale";
-		if (stale) score -= 4;
-		if (score <= 0) continue;
-		candidates.push({
-			id: "",
-			kind: "prior",
-			title: `${summary.runId} · ${summary.surface} · ${summary.status}${fresh ? ` · ${fresh}` : ""}`,
-			score,
-			why,
-			preview: truncate([summary.prompt, ...summary.signals.slice(0, 2), ...summary.risks.slice(0, 2)].filter(Boolean).join("; "), 260),
-			stale,
-		});
-	}
-	return candidates.sort((a, b) => b.score - a.score).slice(0, MAX_PRIOR_RUNS);
+	const related = await findRelatedSummaries(cwd, anchors, MAX_PRIOR_RUNS);
+	return related.map(({ summary, freshness, why, score }) => ({
+		id: "",
+		kind: "prior",
+		title: `${summary.runId} · ${summary.surface} · ${summary.status}${freshness && freshness !== "unknown" ? ` · ${freshness}` : ""}`,
+		score,
+		why,
+		preview: truncate([summary.prompt, ...summary.signals.slice(0, 2), ...summary.risks.slice(0, 2)].filter(Boolean).join("; "), 260),
+		stale: freshness === "stale",
+	}));
 }
 
 function dedupeCandidates(candidates: ScoutCandidate[]): ScoutCandidate[] {

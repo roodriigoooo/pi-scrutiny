@@ -7,6 +7,7 @@ import {
 	appendSummary,
 	artifactPath,
 	dataDir,
+	findRelatedSummaries,
 	freshness,
 	hashFiles,
 	indexPath,
@@ -76,7 +77,7 @@ async function main(): Promise<void> {
 		await fsP.writeFile(fileAbs, "export function withRetry() {}", "utf8");
 		const fileHash = createHash("sha1").update("export function withRetry() {}").digest("hex");
 
-		process.stdout.write(`scrutiny artifacts · 8 checks\n`);
+		process.stdout.write(`scrutiny artifacts · 9 checks\n`);
 
 		await check("layout paths + surfaceArtifactFile", () => {
 			eq(dataDir(cwd), path.join(cwd, ".pi", "scrutiny"), "dataDir");
@@ -156,6 +157,28 @@ async function main(): Promise<void> {
 			}
 		});
 
+		await check("findRelatedSummaries ranks by file/symbol/keyword overlap and caps", async () => {
+			const relCwd = fs.mkdtempSync(path.join(os.tmpdir(), "scrutiny-artifacts-related-"));
+			try {
+				// weight: file 8 > symbol 4 > keyword 1; fileHit ranks above symbolHit despite being older
+				const fileHit = makeSummary("scr_file", 1_000); fileHit.files = ["src/retry.ts"];
+				const symbolHit = makeSummary("scr_sym", 2_000); symbolHit.symbols = ["withRetry"];
+				const noHit = makeSummary("scr_none", 3_000); noHit.files = ["other.ts"]; noHit.symbols = ["other"]; noHit.keywords = ["unrelated"];
+				await appendSummary(relCwd, noHit);
+				await appendSummary(relCwd, symbolHit);
+				await appendSummary(relCwd, fileHit);
+				const related = await findRelatedSummaries(relCwd, { files: ["src/retry.ts"], symbols: ["withRetry"], terms: [] }, 3);
+				assert(related.length === 2, `expected 2 related, got ${related.length}`);
+				eq(related.map((r) => r.summary.runId), ["scr_file", "scr_sym"], "file hit ranks above symbol hit");
+				assert(related[0].why.some((w) => w.startsWith("file:")), "file why present");
+				assert(related[1].why.some((w) => w.startsWith("symbol:")), "symbol why present");
+				const capped = await findRelatedSummaries(relCwd, { files: ["src/retry.ts"], symbols: [], terms: [] }, 1);
+				eq(capped.map((r) => r.summary.runId), ["scr_file"], "cap honored");
+			} finally {
+				fs.rmSync(relCwd, { recursive: true, force: true });
+			}
+		});
+
 		await check("no extension re-declares artifact-layout logic outside artifacts.ts", () => {
 			const extDir = path.resolve(process.cwd(), "extensions", "scrutiny");
 			const files = fs.readdirSync(extDir).filter((f) => f.endsWith(".ts") && f !== "artifacts.ts");
@@ -171,6 +194,7 @@ async function main(): Promise<void> {
 				"function parseIndex",
 				"function dedupeSummaries",
 				"function hashFile",
+				"function findRelatedSummaries",
 			];
 			for (const file of files) {
 				const src = fs.readFileSync(path.join(extDir, file), "utf8");

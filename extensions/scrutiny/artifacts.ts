@@ -20,6 +20,49 @@ const MAX_HASH_BYTES = 8 * 1024 * 1024;
 export type Freshness = "fresh" | "stale" | "unknown";
 export type ArtifactKind = "summary" | "result" | "surface" | "packet" | "responses" | "verify";
 
+export type SummaryAnchor = { files: string[]; symbols: string[]; terms: string[] };
+
+export type RelatedSummary = {
+	summary: ScrutinySummary;
+	freshness: Freshness;
+	staleFiles: string[];
+	why: string[];
+	score: number;
+};
+
+const RELATED_SCAN_LIMIT = 100;
+const RELATED_DEFAULT_LIMIT = 3;
+const RELATED_FILE_WEIGHT = 8;
+const RELATED_SYMBOL_WEIGHT = 4;
+const RELATED_KEYWORD_WEIGHT = 1;
+const RELATED_STALE_PENALTY = 4;
+
+/**
+ * Find prior summaries that overlap the given anchors (files, symbols, terms).
+ * Owns index read, overlap scoring, freshness, stale penalty, and cap. Callers
+ * (scout) own only candidate rendering. Storage stays behind this seam (#8).
+ */
+export async function findRelatedSummaries(cwd: string, anchors: SummaryAnchor, limit: number = RELATED_DEFAULT_LIMIT): Promise<RelatedSummary[]> {
+	const { summaries } = await loadSummaries(cwd);
+	const recent = summaries.slice(0, RELATED_SCAN_LIMIT); // loadSummaries is newest-first
+	const scored: RelatedSummary[] = [];
+	for (const summary of recent) {
+		const why: string[] = [];
+		let score = 0;
+		const fileHits = summary.files.filter((file) => anchors.files.includes(file));
+		if (fileHits.length) { score += RELATED_FILE_WEIGHT * fileHits.length; why.push(`file:${fileHits.slice(0, 2).join(",")}`); }
+		const symbolHits = summary.symbols.filter((symbol) => anchors.symbols.includes(symbol));
+		if (symbolHits.length) { score += RELATED_SYMBOL_WEIGHT * symbolHits.length; why.push(`symbol:${symbolHits.slice(0, 2).join(",")}`); }
+		const keywordHits = summary.keywords.filter((keyword) => anchors.terms.includes(keyword));
+		if (keywordHits.length) { score += RELATED_KEYWORD_WEIGHT * keywordHits.length; why.push(`keyword:${keywordHits.slice(0, 3).join(",")}`); }
+		const f = await freshness(cwd, summary);
+		if (f.freshness === "stale") score -= RELATED_STALE_PENALTY;
+		if (score <= 0) continue;
+		scored.push({ summary, freshness: f.freshness, staleFiles: f.staleFiles, why, score });
+	}
+	return scored.sort((a, b) => b.score - a.score || b.summary.startedAt - a.summary.startedAt).slice(0, limit);
+}
+
 export function dataDir(cwd: string): string {
 	return path.join(cwd, ".pi", "scrutiny");
 }
