@@ -90,7 +90,7 @@ export type ScrutinyRunResult = {
 	surface: ScrutinySurface;
 	panel_mode?: PanelMode;
 	status: "ok" | "error";
-	failure_reason?: "missing_panel" | "all_panels_failed" | "judge_failed" | "recursion_capped" | "unexpected_error" | "verify_failed";
+	failure_reason?: "missing_panel" | "all_panels_failed" | "judge_failed" | "recursion_capped" | "unexpected_error";
 	error?: string;
 	packetPath?: string;
 	packet: string;

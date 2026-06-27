@@ -10,7 +10,7 @@ import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
 import { writeRunResult } from "./summary.js";
 import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, ScoutReport, PanelResponse, VerifyReport } from "./types.js";
 import { createRunId, formatDuration, formatTokens, parseAnalysisJson, safeMkdir } from "./util.js";
-import { runVerifyChecks, verifyProgressMessage } from "./verify.js";
+import { classifyVerifyRun, runVerifyChecks, verifyProgressMessage } from "./verify.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
 
@@ -244,7 +244,9 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 			() => emit(input, progress),
 		);
 		await fs.writeFile(path.join(runDir, "verify.json"), JSON.stringify(verify, null, 2), { encoding: "utf8", mode: 0o600 });
-		progress = { ...progress, message: `verify: ${verify.passed} pass · ${verify.failed} fail · ${verify.skipped} skipped`, updatedAt: Date.now() };
+		// Policy (#11): verify completed -> run stays ok; check failures are findings, not a run failure.
+		const verdict = classifyVerifyRun(verify);
+		progress = { ...progress, message: `verify: ${verdict.summary}${verdict.verifyFailed ? " · checks failed" : ""}`, updatedAt: Date.now() };
 		emit(input, progress);
 	}
 
@@ -339,7 +341,9 @@ async function runVerifyOnly(input: {
 		durationMs: endedAt - startedAt,
 	};
 	await writeRunResult({ cwd, runDir, result, prompt: params.prompt });
-	progress = { ...progress, status: "ok", updatedAt: endedAt, message: `verify: ${verify.passed} pass · ${verify.failed} fail · ${verify.skipped} skipped` };
+	// Policy (#11): verify completed -> run stays ok; check failures are findings.
+	const verdict = classifyVerifyRun(verify);
+	progress = { ...progress, status: "ok", updatedAt: endedAt, message: `verify: ${verdict.summary}${verdict.verifyFailed ? " · checks failed" : ""}` };
 	emit({ onProgress }, progress);
 	recordRunEnd(runId, { status: "ok", endedAt });
 	const brief = formatVerifyBrief({ verify, budgetLine: verifyBudgetLine(verify) });

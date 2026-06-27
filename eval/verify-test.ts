@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runVerifyChecks, verifyProgressMessage, type VerifyProgressEvent } from "../extensions/scrutiny/verify.ts";
-import type { ScrutinyConfig, VerifyReport } from "../extensions/scrutiny/types.ts";
+import { classifyVerifyRun, runVerifyChecks, verifyProgressMessage, type VerifyProgressEvent } from "../extensions/scrutiny/verify.ts";
+import type { ScrutinyConfig, VerifyCheck, VerifyReport } from "../extensions/scrutiny/types.ts";
 
 /**
  * Unit test for the objective verify module (issue #10): runVerifyChecks owns
@@ -63,7 +63,7 @@ function mockExec(handlers: Record<string, () => { stdout?: string; stderr?: str
 }
 
 async function main(): Promise<void> {
-	process.stdout.write(`scrutiny verify · 7 checks\n`);
+	process.stdout.write(`scrutiny verify · 10 checks\n`);
 
 	await check("runVerifyChecks records pass/fail/error with counts and diff stat", async () => {
 		const config = makeConfig([
@@ -137,6 +137,41 @@ async function main(): Promise<void> {
 			assert(!engine.includes(pattern), `engine.ts re-declares "${pattern}" (must live in verify.ts)`);
 		}
 		assert(engine.includes("runVerifyChecks"), "engine.ts calls runVerifyChecks from verify.ts");
+	});
+
+	await check("classifyVerifyRun: all-pass -> ok, not failed", () => {
+		const report: VerifyReport = { checks: [{ name: "typecheck", command: "npm run check", status: "pass", exitCode: 0, durationMs: 10 }], diffStat: undefined, passed: 1, failed: 0, skipped: 0, durationMs: 10 };
+		const v = classifyVerifyRun(report);
+		eq(v.runStatus, "ok", "runStatus ok");
+		assert(!v.verifyFailed, "not failed");
+		eq(v.failedChecks, [], "no failed checks");
+		assert(v.summary.includes("1 pass"), "summary has pass count");
+	});
+
+	await check("classifyVerifyRun: failing checks -> ok run, verifyFailed true, names listed", () => {
+		const report: VerifyReport = {
+			checks: [
+				{ name: "typecheck", command: "npm run check", status: "pass", exitCode: 0, durationMs: 10 },
+				{ name: "tests", command: "npm test", status: "fail", exitCode: 1, durationMs: 20 },
+				{ name: "lint", command: "npm run lint", status: "error", durationMs: 5 },
+			],
+			diffStat: undefined, passed: 1, failed: 2, skipped: 0, durationMs: 35,
+		};
+		const v = classifyVerifyRun(report);
+		eq(v.runStatus, "ok", "run still ok — check failures are findings, not run failure");
+		assert(v.verifyFailed, "verifyFailed true");
+		eq(v.failedChecks, ["tests", "lint"], "failed + errored check names listed");
+	});
+
+	await check("verify_failed reason is not set or declared anywhere", () => {
+		const extDir = path.resolve(process.cwd(), "extensions", "scrutiny");
+		const files = fs.readdirSync(extDir).filter((f) => f.endsWith(".ts"));
+		for (const file of files) {
+			const src = fs.readFileSync(path.join(extDir, file), "utf8");
+			assert(!src.includes("verify_failed"), `${file}: references dead "verify_failed" reason (policy: verify completed = ok)`);
+		}
+		const typesSrc = fs.readFileSync(path.join(extDir, "types.ts"), "utf8");
+		assert(!typesSrc.includes("verify_failed"), "types.ts still declares verify_failed (remove it; policy is verify-completed = ok)");
 	});
 
 	const pass = checks - failures.length;

@@ -64,6 +64,35 @@ export function verifyProgressMessage(event: VerifyProgressEvent): string {
 	return `verify ${pos}: ${event.name} ${event.status}${event.durationMs !== undefined ? ` in ${formatDuration(event.durationMs)}` : ""}`;
 }
 
+export type VerifyRunClassification = {
+	/** Always "ok" when a verify report exists: verify completed. Check failures are findings, not run failures. */
+	runStatus: "ok";
+	/** True when any check failed or errored. */
+	verifyFailed: boolean;
+	failedChecks: string[];
+	summary: string;
+};
+
+/**
+ * Verify status policy (issue #11):
+ * - A scrutiny run with a completed verify report is status "ok". Verify is the
+ *   objective arbiter; failing checks are findings reported in the verify
+ *   report, not a scrutiny run failure. A run failure means the run itself
+ *   broke (missing_panel, all_panels_failed, judge_failed, recursion_capped,
+ *   unexpected_error) — never "checks found problems."
+ * - No verify-specific failure reason exists. If verify cannot produce a
+ *   report in the future, that would surface as unexpected_error, not a check fail.
+ */
+export function classifyVerifyRun(report: VerifyReport): VerifyRunClassification {
+	const failedChecks = report.checks.filter((c) => c.status === "fail" || c.status === "error").map((c) => c.name);
+	return {
+		runStatus: "ok",
+		verifyFailed: report.failed > 0,
+		failedChecks,
+		summary: `${report.passed} pass · ${report.failed} fail · ${report.skipped} skipped`,
+	};
+}
+
 async function readDiffStat(exec: ExecLike, signal?: AbortSignal): Promise<string | undefined> {
 	try {
 		const stat = await exec("git", ["diff", "--stat"], { timeout: DIFF_STAT_TIMEOUT_MS, signal });
