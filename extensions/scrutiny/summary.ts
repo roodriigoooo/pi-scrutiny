@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { appendSummary, hashFiles, surfaceArtifactFile } from "./artifacts.js";
+import { surfaceFacts } from "./normalize.js";
 import type { PanelResponse, ScrutinyRunResult, ScrutinySummary } from "./types.js";
 import { truncate } from "./util.js";
 
@@ -70,6 +71,7 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 	const keywords = limit(extractKeywords([prompt, analysisText, files.join(" ")].join("\n")), MAX_ITEMS);
 	const missingContext = limit(extractMissingContext(result.responses, result.analysis?.blind_spots), 8);
 	const scoutGaps = result.scout?.gaps.length ? limit(result.scout.gaps.map((gap) => gap.message), 8) : undefined;
+	const facts = result.normalized ? surfaceFacts(result.normalized) : undefined;
 	const fileHashes = await hashFiles(cwd, files);
 	const verifyPath = result.verify && await exists(path.join(runDir, "verify.json")) ? rel(cwd, path.join(runDir, "verify.json")) : undefined;
 	const responsesPath = await exists(path.join(runDir, "responses.json")) ? rel(cwd, path.join(runDir, "responses.json")) : undefined;
@@ -93,6 +95,7 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 		contradictions: limit(extractContradictions(result), 6),
 		missingContext,
 		scoutGaps,
+		surfaceFacts: facts,
 		sourceRefs,
 		fileHashes,
 		resultPath: rel(cwd, path.join(runDir, "result.json")),

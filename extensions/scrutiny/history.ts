@@ -195,6 +195,7 @@ function renderRow(lines: string[], row: HistoryRow): void {
 	pushCompact(lines, "risks", summary.risks, 3);
 	pushCompact(lines, "missing", summary.missingContext, 3);
 	pushCompact(lines, "scout-gaps", summary.scoutGaps, 3);
+pushCompact(lines, "facts", surfaceFactsItems(summary.surfaceFacts), 3);
 	pushCompact(lines, "refs", summary.sourceRefs, 5);
 	const paths = [summary.resultPath, summary.surfaceArtifactPath, summary.packetPath, summary.responsesPath, summary.verifyPath].filter(Boolean).join(" · ");
 	if (paths) lines.push(`paths: ${paths}`);
@@ -337,6 +338,7 @@ class HistoryPicker implements Component, Focusable {
 		pushPreview(lines, this.theme, "risks", s.risks, 2);
 		pushPreview(lines, this.theme, "missing", s.missingContext, 2);
 		pushPreview(lines, this.theme, "scout-gaps", s.scoutGaps, 2);
+pushPreview(lines, this.theme, "facts", surfaceFactsItems(s.surfaceFacts), 2);
 		pushPreview(lines, this.theme, "paths", [s.resultPath, s.surfaceArtifactPath, s.packetPath, s.responsesPath, s.verifyPath].filter((item): item is string => Boolean(item)), 3);
 		return lines;
 	}
@@ -514,6 +516,23 @@ function formatBytes(n: number): string {
 	if (n < 1024) return `${n}B`;
 	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
 	return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/** Turn a SurfaceFacts object into a few readable "label: value" strings for history rows. */
+function surfaceFactsItems(facts: ScrutinySummary["surfaceFacts"]): string[] {
+	if (!facts) return [];
+	const out: string[] = [];
+	if (facts.rootCauses?.length) out.push(`root causes: ${facts.rootCauses.join("; ")}`);
+	if (facts.distinguishingTests?.length) out.push(`tests: ${facts.distinguishingTests.join("; ")}`);
+	if (facts.findings?.length) out.push(`findings: ${facts.findings.join("; ")}`);
+	if (facts.suggestedChecks?.length) out.push(`checks: ${facts.suggestedChecks.join("; ")}`);
+	if (facts.symbols?.length) out.push(`symbols: ${facts.symbols.join("; ")}`);
+	if (facts.files?.length) out.push(`files: ${facts.files.join("; ")}`);
+	if (facts.criteria?.length) out.push(`criteria: ${facts.criteria.join("; ")}`);
+	if (facts.testCases?.length) out.push(`test cases: ${facts.testCases.join("; ")}`);
+	if (facts.positions?.length) out.push(`positions: ${facts.positions.join("; ")}`);
+	if (facts.recommendation) out.push(`rec: ${facts.recommendation}`);
+	return out;
 }
 
 function topBorder(width: number, title: string, theme: Theme): string {

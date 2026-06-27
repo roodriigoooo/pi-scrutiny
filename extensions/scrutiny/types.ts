@@ -1,11 +1,11 @@
-import type { SurfaceArtifact } from "./normalize.js";
+import type { SurfaceArtifact, SurfaceFacts } from "./normalize.js";
 
 export type ScrutinySurface = "consult" | "hypotheses" | "criteria" | "repo-map" | "risks" | "verify";
 export type PanelMode = "replicate" | "roles";
 export type ScrutinyStatus = "pending" | "running" | "ready" | "failed";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-export type { SurfaceArtifact };
+export type { SurfaceArtifact, SurfaceFacts };
 
 export type ScoutCandidate = {
 	/** Stable id assigned in ranked order (c0, c1, ...). Used by packet preview to toggle candidates. */
@@ -127,6 +127,7 @@ export type ScrutinySummary = {
 	contradictions: string[];
 	missingContext: string[];
 	scoutGaps?: string[];
+	surfaceFacts?: SurfaceFacts;
 	sourceRefs: string[];
 	fileHashes: Record<string, string>;
 	resultPath: string;

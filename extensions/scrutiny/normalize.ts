@@ -235,3 +235,37 @@ function extractFilePaths(text: string): string[] {
 function unique(items: string[]): string[] {
 	return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
 }
+
+/** Compact, bounded per-surface handles derived from a SurfaceArtifact for history/UI (#13). */
+export type SurfaceFacts = {
+	rootCauses?: string[];
+	distinguishingTests?: string[];
+	findings?: string[];
+	suggestedChecks?: string[];
+	symbols?: string[];
+	files?: string[];
+	criteria?: string[];
+	testCases?: string[];
+	positions?: string[];
+	recommendation?: string;
+};
+
+export function surfaceFacts(artifact: SurfaceArtifact): SurfaceFacts {
+	switch (artifact.surface) {
+		case "hypotheses":
+			return { rootCauses: artifact.hypotheses.rootCauses.slice(0, 3), distinguishingTests: artifact.hypotheses.distinguishingTests.slice(0, 2) };
+		case "risks":
+			return {
+				findings: artifact.risks.findings.slice(0, 3).map((f) => f.finding),
+				suggestedChecks: unique(artifact.risks.findings.map((f) => f.suggestedCheck).filter((s): s is string => Boolean(s))).slice(0, 3),
+			};
+		case "repo-map":
+			return { symbols: artifact.repoMap.symbols.slice(0, 5), files: artifact.repoMap.files.slice(0, 5) };
+		case "criteria":
+			return { criteria: artifact.criteria.criteria.slice(0, 3), testCases: artifact.criteria.testCases.slice(0, 2) };
+		case "consult":
+			return { positions: artifact.consult.positions.slice(0, 2), recommendation: artifact.consult.recommendation };
+		case "verify":
+			return {};
+	}
+}

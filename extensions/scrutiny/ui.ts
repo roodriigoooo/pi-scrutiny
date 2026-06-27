@@ -1,7 +1,8 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
+import { surfaceFacts } from "./normalize.js";
 import { SURFACE_DEFAULTS } from "./surfaces.js";
-import type { PanelMode, ScrutinyRunProgress, ScrutinyRunResult, PanelResponse } from "./types.js";
+import type { PanelMode, ScrutinyRunProgress, ScrutinyRunResult, PanelResponse, SurfaceFacts } from "./types.js";
 import { formatDuration, formatTokens, truncate } from "./util.js";
 
 export function scrutinyStatusText(details: unknown): string {
@@ -162,6 +163,8 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	else if (result.panel_mode !== "roles" && result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 100).replace(/\n/g, " ")}`);
 	else if (result.analysis?.coverage?.length) lines.push(`  ${theme.fg("accent", "coverage")} ${truncate(result.analysis.coverage[0] ?? "", 100).replace(/\n/g, " ")}`);
 	else if (result.analysis?.consensus?.length) lines.push(`  ${theme.fg("accent", "shared")} ${truncate(result.analysis.consensus[0] ?? "", 100).replace(/\n/g, " ")}`);
+	const factLine = surfaceFactLine(result.normalized ? surfaceFacts(result.normalized) : undefined, theme);
+	if (factLine) lines.push(factLine);
 	if (result.verify) lines.push(`  ${theme.fg(result.verify.failed ? "error" : "success", "verify")} ${result.verify.passed} pass ${result.verify.failed} fail ${result.verify.skipped} skip`);
 	if (result.packetPath) lines.push(`  ${theme.fg("dim", "ctrl+o expand")}`);
 	return lines.join("\n");
@@ -169,6 +172,17 @@ function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 
 function artifactPath(packetPath: string, file: string): string {
 	return packetPath.replace(/packet\.md$/, file);
+}
+
+function surfaceFactLine(facts: SurfaceFacts | undefined, theme: any): string | undefined {
+	if (!facts) return undefined;
+	if (facts.rootCauses?.length) return `  ${theme.fg("accent", "root cause")} ${truncate(facts.rootCauses[0] ?? "", 100).replace(/\n/g, " ")}`;
+	if (facts.findings?.length) return `  ${theme.fg("warning", "risk")} ${truncate(facts.findings[0] ?? "", 100).replace(/\n/g, " ")}`;
+	if (facts.symbols?.length) return `  ${theme.fg("accent", "symbols")} ${facts.symbols.slice(0, 3).join(", ")}`;
+	if (facts.criteria?.length) return `  ${theme.fg("accent", "criterion")} ${truncate(facts.criteria[0] ?? "", 100).replace(/\n/g, " ")}`;
+	if (facts.recommendation) return `  ${theme.fg("accent", "rec")} ${truncate(facts.recommendation, 100).replace(/\n/g, " ")}`;
+	if (facts.positions?.length) return `  ${theme.fg("accent", "position")} ${truncate(facts.positions[0] ?? "", 100).replace(/\n/g, " ")}`;
+	return undefined;
 }
 
 function panelLine(response: PanelResponse, theme: any): string {
@@ -215,6 +229,21 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 		lines.push(`scout candidates: ${stats.candidates}  `);
 		lines.push(`related memory: ${stats.memory}  `);
 		lines.push(`missing-context signals: ${stats.gaps}`);
+		lines.push("");
+	}
+	const facts = result.normalized ? surfaceFacts(result.normalized) : undefined;
+	if (facts) {
+		lines.push("## Surface facts");
+		if (facts.rootCauses?.length) pushList(lines, "Root causes", facts.rootCauses);
+		if (facts.distinguishingTests?.length) pushList(lines, "Distinguishing tests", facts.distinguishingTests);
+		if (facts.findings?.length) pushList(lines, "Findings", facts.findings);
+		if (facts.suggestedChecks?.length) pushList(lines, "Suggested checks", facts.suggestedChecks);
+		if (facts.symbols?.length) pushList(lines, "Symbols", facts.symbols);
+		if (facts.files?.length) pushList(lines, "Files", facts.files);
+		if (facts.criteria?.length) pushList(lines, "Criteria", facts.criteria);
+		if (facts.testCases?.length) pushList(lines, "Test cases", facts.testCases);
+		if (facts.positions?.length) pushList(lines, "Positions", facts.positions);
+		if (facts.recommendation) lines.push(`recommendation: ${facts.recommendation}`);
 		lines.push("");
 	}
 	lines.push("## Panel outputs");

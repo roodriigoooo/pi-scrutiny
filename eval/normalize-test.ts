@@ -1,4 +1,4 @@
-import { normalizeSurface } from "../extensions/scrutiny/normalize.ts";
+import { normalizeSurface, surfaceFacts } from "../extensions/scrutiny/normalize.ts";
 import type { PanelResponse } from "../extensions/scrutiny/types.ts";
 
 /**
@@ -33,7 +33,7 @@ function resp(model: string, role: string, content: string): PanelResponse {
 }
 
 async function main(): Promise<void> {
-	process.stdout.write(`scrutiny normalize · 7 checks\n`);
+	process.stdout.write(`scrutiny normalize · 9 checks\n`);
 
 	await check("hypotheses: extracts root causes, evidence, tests, missing context from messy text", () => {
 		const responses = [
@@ -186,6 +186,28 @@ async function main(): Promise<void> {
 		eq(normalizeSurface("hypotheses", responses), undefined, "empty content -> undefined");
 		const errored = [{ ...resp("m1", "replicate analyst", "x"), status: "error" as const }];
 		eq(normalizeSurface("hypotheses", errored), undefined, "errored -> undefined");
+	});
+
+	await check("surfaceFacts: hypotheses -> bounded root causes + tests", () => {
+		const responses = [resp("m1", "replicate analyst", [
+			"## Likely root causes (ranked)",
+			"- cause one", "- cause two", "- cause three", "- cause four",
+			"## Minimal distinguishing test",
+			"- test a", "- test b", "- test c",
+		].join("\n"))];
+		const facts = surfaceFacts(normalizeSurface("hypotheses", responses)!);
+		eq(facts.rootCauses, ["cause one", "cause two", "cause three"], "rootCauses bounded to 3");
+		eq(facts.distinguishingTests, ["test a", "test b"], "distinguishingTests bounded to 2");
+	});
+
+	await check("surfaceFacts: risks -> findings + deduped suggested checks", () => {
+		const responses = [
+			resp("m1", "concurrency reviewer", ["## Findings", "- f1", "## Suggested check or test", "- check A"].join("\n")),
+			resp("m2", "reactive-chain reviewer", ["## Findings", "- f2", "## Suggested check or test", "- check A"].join("\n")),
+		];
+		const facts = surfaceFacts(normalizeSurface("risks", responses)!);
+		eq(facts.findings, ["f1", "f2"], "findings");
+		eq(facts.suggestedChecks, ["check A"], "suggestedChecks deduped across panelists");
 	});
 
 	const pass = checks - failures.length;
