@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { buildDeterministicAnalysis, detectMush, formatFailureBrief, formatScrutinyBrief, formatVerifyBrief } from "./analysis.js";
-import { SURFACE_DEFAULTS, readScrutinyConfig, resolveJudge, resolvePanel, resolveTools } from "./config.js";
+import { readScrutinyConfig, resolveJudge, resolvePanel, resolveTools } from "./config.js";
+import { SURFACE_DEFAULTS, inferSurface } from "./surfaces.js";
 import { buildTaskPacket, judgePrompt, panelPrompt, panelRoles } from "./packet.js";
 import { runModelTask } from "./runner.js";
 import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
@@ -409,16 +410,6 @@ function verifyProgressMessage(event: VerifyProgressEvent): string {
 function resolveSurface(params: ScrutinyParams): ScrutinySurface {
 	if (params.surface) return params.surface;
 	return inferSurface(params.prompt);
-}
-
-export function inferSurface(prompt: string): ScrutinySurface {
-	const text = prompt.toLowerCase();
-	if (/\b(verify|typecheck|lint|run tests|test suite|does it pass|check the build|ci)\b/.test(text)) return "verify";
-	if (/\b(risk|review the patch|review this change|concurrency|race|reactive|idempoten|circuit.?breaker|security review)\b/.test(text)) return "risks";
-	if (/\b(root cause|why does|debug|intermittent|flaky|bug in|what is causing)\b/.test(text)) return "hypotheses";
-	if (/\b(acceptance criter|edge case|backward.?compat|migrat|spec for|definition of done)\b/.test(text)) return "criteria";
-	if (/\b(repo map|where is|call path|callers of|symbols|trace|how does .* work|navigate the code)\b/.test(text)) return "repo-map";
-	return "consult";
 }
 
 function shouldRunJudge(surface: ScrutinySurface, judgeMode: ScrutinyParams["judgeMode"]): boolean {

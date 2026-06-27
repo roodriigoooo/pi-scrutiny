@@ -1,6 +1,6 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
-import { SURFACE_DEFAULTS } from "./config.js";
+import { SURFACE_DEFAULTS } from "./surfaces.js";
 import type { PanelMode, ScrutinyRunProgress, ScrutinyRunResult, PanelResponse } from "./types.js";
 import { formatDuration, formatTokens, truncate } from "./util.js";
 

@@ -9,10 +9,11 @@ import { historyText, showHistoryPicker } from "./scrutiny/history.js";
 import { confirmPacketPreview } from "./scrutiny/preview.js";
 import { activeProgresses, recentRuns } from "./scrutiny/registry.js";
 import { showScrutinyPalette } from "./scrutiny/palette.js";
+import { SCRUTINY_SURFACES, SCRUTINY_SURFACE_SET, SURFACE_DOCS } from "./scrutiny/surfaces.js";
 import type { ScrutinyParams, ScrutinySurface } from "./scrutiny/types.js";
 import { scrutinyStatusText, renderScrutinyCall, renderScrutinyDock, renderScrutinyMessage, renderScrutinyResult } from "./scrutiny/ui.js";
 
-const SurfaceEnum = StringEnum(["consult", "hypotheses", "criteria", "repo-map", "risks", "verify"] as const);
+const SurfaceEnum = StringEnum(SCRUTINY_SURFACES);
 const JudgeModeEnum = StringEnum(["auto", "off", "on"] as const);
 
 function refreshScrutinyChrome(ctx: ExtensionContext, latest?: unknown): void {
@@ -183,8 +184,6 @@ function parseInline(trimmed: string, config: ReturnType<typeof readScrutinyConf
 	return { params: {}, prompt };
 }
 
-const SCRUTINY_SURFACE_SET = new Set<ScrutinySurface>(["consult", "hypotheses", "criteria", "repo-map", "risks", "verify"]);
-
 async function handleConfigCommand(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const trimmed = args.trim();
 	if (!trimmed || trimmed === "show") {
@@ -259,12 +258,7 @@ function helpText(): string {
 		"multi-model panel for deliberation, plus objective repo verification. not patch scrutiny.",
 		"",
 		"surfaces:",
-		"- `consult` — replicate mode. bounded research/synthesis (validated use). trade-off explainer runs by default.",
-		"- `hypotheses` — replicate mode. ranked root causes + confirming evidence + minimal distinguishing tests. disagreement is signal.",
-		"- `criteria` — replicate mode. acceptance spec: edge cases, backward-compat, migration, test cases.",
-		"- `repo-map` — roles mode. compact context (symbols, call paths, tests, config, invariants) for an upcoming edit.",
-		"- `risks` — roles mode. per-class risk review of a patch (concurrency, reactive-chain, api-compat, security, perf, migration, null, flaky). runs verify.",
-		"- `verify` — runs tests/typecheck/lint as the objective arbiter. no panel, no judge.",
+		...SCRUTINY_SURFACES.map((surface) => `- \`${surface}\` — ${SURFACE_DOCS[surface].mode}. ${SURFACE_DOCS[surface].description}`),
 		"",
 		"flow: surfaces run inline and stream a status footer while the panel works. press esc to cancel a run.",
 		"mode: replicate means same prompt and disagreement signal; roles means lenses and coverage/gaps signal.",

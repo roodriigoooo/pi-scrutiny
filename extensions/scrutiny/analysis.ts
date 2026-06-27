@@ -1,4 +1,5 @@
 import type { PanelMode, ScrutinyAnalysis, PanelResponse, VerifyReport, ScrutinySurface } from "./types.js";
+import { SURFACE_ACTION_LINES, panelModeBriefLine } from "./surfaces.js";
 import { truncate } from "./util.js";
 
 export function formatFailureBrief(input: {
@@ -143,7 +144,7 @@ export function formatScrutinyBrief(input: {
 		lines.push(formatVerifyReport(input.verify));
 	}
 
-	lines.push("", surfaceActionLine(input.surface));
+	lines.push("", SURFACE_ACTION_LINES[input.surface]);
 	return lines.join("\n").trim();
 }
 
@@ -179,29 +180,6 @@ export function formatVerifyReport(verify: VerifyReport): string {
 
 function verifyLine(verify: VerifyReport): string {
 	return `verify: ${verify.passed} pass · ${verify.failed} fail · ${verify.skipped} skipped`;
-}
-
-function panelModeBriefLine(surface: ScrutinySurface, panelMode: PanelMode): string {
-	return panelMode === "replicate"
-		? `[${surface}] replicate · agreement/disagreement is signal.`
-		: `[${surface}] roles · coverage/gaps are signal; disagreement stop-signal disabled.`;
-}
-
-function surfaceActionLine(surface: ScrutinySurface): string {
-	switch (surface) {
-		case "consult":
-			return "RECOMMENDED NEXT ACTION: synthesize from evidence above. Treat panel as consultation, not authority.";
-		case "hypotheses":
-			return "RECOMMENDED NEXT ACTION: run best distinguishing test(s), then act against repo. Do not merge a fix until hypothesis is confirmed by evidence.";
-		case "criteria":
-			return "RECOMMENDED NEXT ACTION: implement against fused spec above. Run verify after edit.";
-		case "repo-map":
-			return "RECOMMENDED NEXT ACTION: use map above as context for one coding agent to edit. Do not fuse edits from multiple panelists.";
-		case "risks":
-			return "RECOMMENDED NEXT ACTION: address findings by running suggested checks/tests, then editing. Do not merge risk-review prose into patch.";
-		case "verify":
-			return "RECOMMENDED NEXT ACTION: act on pass/fail above. Arbiter is checks, not any model.";
-	}
 }
 
 function pushList(lines: string[], title: string, items: string[] | undefined): void {
