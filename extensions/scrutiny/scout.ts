@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { freshness, indexPath } from "./artifacts.js";
 import type { ScrutinyParams, ScrutinySummary, ScrutinySurface, ScoutCandidate, ScoutGap, ScoutReport } from "./types.js";
-import { scrutinyDataDir, truncate } from "./util.js";
+import { truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
 
@@ -260,10 +260,10 @@ async function pathCandidates(cwd: string, exec: ExecLike, anchors: Anchors, sig
 }
 
 async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<ScoutCandidate[]> {
-	const indexPath = path.join(scrutinyDataDir(cwd), "index.jsonl");
+	const indexFile = indexPath(cwd);
 	let lines: string[];
 	try {
-		lines = (await fs.readFile(indexPath, "utf8")).split(/\r?\n/).filter(Boolean).slice(-100);
+		lines = (await fs.readFile(indexFile, "utf8")).split(/\r?\n/).filter(Boolean).slice(-100);
 	} catch {
 		return [];
 	}
@@ -279,14 +279,15 @@ async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<ScoutC
 		if (symbolHits.length) { score += 4 * symbolHits.length; why.push(`symbol:${symbolHits.slice(0, 2).join(",")}`); }
 		const keywordHits = summary.keywords.filter((keyword) => anchors.terms.includes(keyword));
 		if (keywordHits.length) { score += keywordHits.length; why.push(`keyword:${keywordHits.slice(0, 3).join(",")}`); }
-		const freshness = await summaryFreshness(cwd, summary);
-		const stale = freshness === "stale";
+		const f = await freshness(cwd, summary);
+		const fresh = f.freshness === "unknown" ? undefined : f.freshness;
+		const stale = f.freshness === "stale";
 		if (stale) score -= 4;
 		if (score <= 0) continue;
 		candidates.push({
 			id: "",
 			kind: "prior",
-			title: `${summary.runId} · ${summary.surface} · ${summary.status}${freshness ? ` · ${freshness}` : ""}`,
+			title: `${summary.runId} · ${summary.surface} · ${summary.status}${fresh ? ` · ${fresh}` : ""}`,
 			score,
 			why,
 			preview: truncate([summary.prompt, ...summary.signals.slice(0, 2), ...summary.risks.slice(0, 2)].filter(Boolean).join("; "), 260),
@@ -294,22 +295,6 @@ async function priorRunCandidates(cwd: string, anchors: Anchors): Promise<ScoutC
 		});
 	}
 	return candidates.sort((a, b) => b.score - a.score).slice(0, MAX_PRIOR_RUNS);
-}
-
-async function summaryFreshness(cwd: string, summary: ScrutinySummary): Promise<"fresh" | "stale" | undefined> {
-	const hashes = Object.entries(summary.fileHashes ?? {});
-	if (!hashes.length) return undefined;
-	for (const [file, expected] of hashes) {
-		try {
-			const abs = path.resolve(cwd, file);
-			if (!isInside(cwd, abs)) return "stale";
-			const actual = createHash("sha1").update(await fs.readFile(abs)).digest("hex");
-			if (actual !== expected) return "stale";
-		} catch {
-			return "stale";
-		}
-	}
-	return "fresh";
 }
 
 function dedupeCandidates(candidates: ScoutCandidate[]): ScoutCandidate[] {
@@ -373,11 +358,6 @@ function escapeRegex(text: string): string {
 
 function unique(items: string[]): string[] {
 	return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
-}
-
-function isInside(cwd: string, file: string): boolean {
-	const relative = path.relative(cwd, file);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 const STOP = new Set([

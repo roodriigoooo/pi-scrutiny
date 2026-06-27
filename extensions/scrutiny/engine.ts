@@ -4,11 +4,12 @@ import { buildDeterministicAnalysis, detectMush, formatFailureBrief, formatScrut
 import { readScrutinyConfig, resolveJudge, resolvePanel, resolveTools } from "./config.js";
 import { SURFACE_DEFAULTS, inferSurface } from "./surfaces.js";
 import { buildTaskPacket, judgePrompt, panelPrompt, panelRoles } from "./packet.js";
+import { runDir as resolveRunDir } from "./artifacts.js";
 import { runModelTask } from "./runner.js";
 import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
 import { writeRunResult } from "./summary.js";
 import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, ScoutReport, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
-import { createRunId, formatDuration, formatTokens, scrutinyDataDir, parseAnalysisJson, safeMkdir, truncate } from "./util.js";
+import { createRunId, formatDuration, formatTokens, parseAnalysisJson, safeMkdir, truncate } from "./util.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
 
@@ -50,7 +51,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	const judgeModel = resolveJudge(input.params, config, panelMembers);
 	const runJudgeByPolicy = shouldRunJudge(surface, input.params.judgeMode);
 	const runVerifyByPolicy = shouldRunVerify(surface, input.params.verify);
-	const runDir = path.join(scrutinyDataDir(input.cwd), runId);
+	const runDir = resolveRunDir(input.cwd, runId);
 	const packetPath = path.join(runDir, "packet.md");
 
 	if (!acquireRunLock(runId)) {

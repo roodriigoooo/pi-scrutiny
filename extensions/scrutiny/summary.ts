@@ -1,12 +1,11 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { appendSummary, hashFiles, surfaceArtifactFile } from "./artifacts.js";
 import type { PanelResponse, ScrutinyRunResult, ScrutinySummary } from "./types.js";
-import { scrutinyDataDir, truncate } from "./util.js";
+import { truncate } from "./util.js";
 
 const MAX_ITEMS = 40;
 const MAX_SOURCE_REFS = 60;
-const MAX_HASH_BYTES = 8 * 1024 * 1024;
 
 export async function writeRunResult(input: { cwd: string; runDir: string; result: ScrutinyRunResult; prompt?: string }): Promise<void> {
 	await fs.writeFile(path.join(input.runDir, "result.json"), JSON.stringify(input.result, null, 2), { encoding: "utf8", mode: 0o600 });
@@ -51,15 +50,10 @@ async function writeSurfaceArtifact(input: { runDir: string; result: ScrutinyRun
 	await fs.writeFile(path.join(input.runDir, file), JSON.stringify(artifact, null, 2), { encoding: "utf8", mode: 0o600 });
 }
 
-function surfaceArtifactFile(surface: ScrutinyRunResult["surface"]): string | undefined {
-	if (surface === "verify") return undefined; // verify already writes verify.json.
-	return `${surface}.json`;
-}
-
 export async function writeRunSummary(input: { cwd: string; runDir: string; result: ScrutinyRunResult; prompt?: string }): Promise<ScrutinySummary> {
 	const summary = await buildRunSummary(input);
 	await fs.writeFile(path.join(input.runDir, "summary.json"), JSON.stringify(summary, null, 2), { encoding: "utf8", mode: 0o600 });
-	await appendSummaryIndex(input.cwd, summary);
+	await appendSummary(input.cwd, summary);
 	return summary;
 }
 
@@ -75,7 +69,7 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 	const keywords = limit(extractKeywords([prompt, analysisText, files.join(" ")].join("\n")), MAX_ITEMS);
 	const missingContext = limit(extractMissingContext(result.responses, result.analysis?.blind_spots), 8);
 	const scoutGaps = result.scout?.gaps.length ? limit(result.scout.gaps.map((gap) => gap.message), 8) : undefined;
-	const fileHashes = await hashReferencedFiles(cwd, files);
+	const fileHashes = await hashFiles(cwd, files);
 	const verifyPath = result.verify && await exists(path.join(runDir, "verify.json")) ? rel(cwd, path.join(runDir, "verify.json")) : undefined;
 	const responsesPath = await exists(path.join(runDir, "responses.json")) ? rel(cwd, path.join(runDir, "responses.json")) : undefined;
 	const surfaceArtifactName = surfaceArtifactFile(result.surface);
@@ -106,12 +100,6 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 		responsesPath,
 		verifyPath,
 	};
-}
-
-async function appendSummaryIndex(cwd: string, summary: ScrutinySummary): Promise<void> {
-	const indexPath = path.join(scrutinyDataDir(cwd), "index.jsonl");
-	await fs.mkdir(path.dirname(indexPath), { recursive: true, mode: 0o700 });
-	await fs.appendFile(indexPath, `${JSON.stringify(summary)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 function extractTask(packet: string): string {
@@ -219,23 +207,6 @@ function extractKeywords(text: string): string[] {
 	return unique(tokens.filter((token) => !STOP.has(token) && token.length <= 40));
 }
 
-async function hashReferencedFiles(cwd: string, files: string[]): Promise<Record<string, string>> {
-	const hashes: Record<string, string> = {};
-	for (const file of files) {
-		const abs = path.resolve(cwd, file);
-		if (!isInside(cwd, abs)) continue;
-		try {
-			const stat = await fs.stat(abs);
-			if (!stat.isFile() || stat.size > MAX_HASH_BYTES) continue;
-			const data = await fs.readFile(abs);
-			hashes[file] = createHash("sha1").update(data).digest("hex");
-		} catch {
-			// deleted/missing/generated file; leave unhashed.
-		}
-	}
-	return hashes;
-}
-
 async function exists(file: string): Promise<boolean> {
 	try {
 		await fs.access(file);
@@ -248,11 +219,6 @@ async function exists(file: string): Promise<boolean> {
 function rel(cwd: string, file: string): string {
 	const relative = path.relative(cwd, file);
 	return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : file;
-}
-
-function isInside(cwd: string, file: string): boolean {
-	const relative = path.relative(cwd, file);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function cleanBullet(line: string): string {
