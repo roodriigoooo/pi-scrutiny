@@ -11,6 +11,7 @@ import { writeRunResult } from "./summary.js";
 import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, ScoutReport, PanelResponse, VerifyReport } from "./types.js";
 import { createRunId, formatDuration, formatTokens, parseAnalysisJson, safeMkdir } from "./util.js";
 import { classifyVerifyRun, runVerifyChecks, verifyProgressMessage } from "./verify.js";
+import { normalizeSurface } from "./normalize.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
 
@@ -251,6 +252,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	}
 
 	const endedAt = Date.now();
+	const normalized = normalizeSurface(surface, responses);
 	const result: ScrutinyRunResult = {
 		runId,
 		surface,
@@ -260,6 +262,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		packetPath,
 		packet,
 		scout,
+		normalized,
 		responses,
 		failed_models: failedModels,
 		judge,

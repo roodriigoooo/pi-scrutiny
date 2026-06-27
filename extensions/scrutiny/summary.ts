@@ -28,6 +28,7 @@ async function writeSurfaceArtifact(input: { runDir: string; result: ScrutinyRun
 		error: input.result.error,
 		packetPath: input.result.packetPath,
 		analysis: input.result.analysis,
+		normalized: input.result.normalized,
 		panel: input.result.responses.map((response) => ({
 			model: response.model,
 			role: response.role,

@@ -12,6 +12,7 @@ npm run eval:coverage      # unit-level surface catalog coverage (no subprocesse
 npm run eval:scout         # unit-level context scout test (mock exec, no subprocesses)
 npm run eval:artifacts     # unit-level artifact memory test (temp cwd, no subprocesses)
 npm run eval:verify        # unit-level objective verify test (fake exec, no subprocesses)
+npm run eval:normalize     # unit-level surface normalization test (fixtures, no subprocesses)
 ```
 
 exit code is non-zero if any task fails or errors.
@@ -34,7 +35,11 @@ not black-box. imports `artifacts.ts` (which has no relative runtime imports, so
 
 ## verify suite (`eval:verify`)
 
-not black-box. imports `verify.ts` via the `_ts-resolve` hook and exercises `runVerifyChecks` with a fake exec: pass/fail/error status from exit codes, output truncation, per-check progress events (running -> terminal), empty check list, diff-stat capture, and `verifyProgressMessage` formatting. also scans `engine.ts` to fail if verify execution is re-declared outside `verify.ts`. no model keys, no real subprocesses.
+not black-box. imports `verify.ts` via the `_ts-resolve` hook and exercises `runVerifyChecks` with a fake exec: pass/fail/error status from exit codes, output truncation, per-check progress events (running -> terminal), empty check list, diff-stat capture, `verifyProgressMessage` formatting, and the verify status policy (`classifyVerifyRun`: completed verify = ok run; check failures are findings). also scans `engine.ts` to fail if verify execution is re-declared outside `verify.ts` and that the dead `verify_failed` reason is gone. no model keys, no real subprocesses.
+
+## normalize suite (`eval:normalize`)
+
+not black-box. imports `normalize.ts` (type-only relative imports, no resolve hook needed) and exercises `normalizeSurface` with messy panel Markdown fixtures per surface: hypotheses (root causes/evidence/tests/missing), risks (findings grouped by risk class with severity + suggested check), criteria (criteria/edge cases/test cases/migration), repo-map (symbols/call paths/tests/configs + file-path extraction), consult (position/evidence/risks/recommendation), verify (marker), and empty/error responses (undefined). no model keys, no `pi` subprocesses.
 
 ## what the smoke suite checks (no model keys needed)
 
