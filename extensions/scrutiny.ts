@@ -272,6 +272,8 @@ function helpText(): string {
 		"/scrutiny history                  # interactive run history search",
 		"/scrutiny history list [query]     # text history for scripts",
 		"/scrutiny history open <runId|latest> [result|summary|surface|packet|responses|verify]",
+		"/scrutiny history delete <runId|latest> [--yes]  # preview without --yes; removes run dir + rebuilds index",
+		"/scrutiny history clear [--yes]              # preview without --yes; removes every run dir",
 		"/scrutiny panels                   # list saved panel presets",
 		"/scrutiny config                   # show config files + active settings",
 		"/scrutiny config edit [project]    # edit ~/.pi/agent/scrutiny.json or .pi/scrutiny.json",

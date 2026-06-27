@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { artifactPath, freshness, loadSummaries, type ArtifactKind, type Freshness } from "./artifacts.js";
+import { artifactPath, deleteAllRuns, deleteRun, freshness, loadSummaries, previewRun, type ArtifactKind, type Freshness } from "./artifacts.js";
 import type { ScrutinySummary } from "./types.js";
 import { formatDuration, truncate } from "./util.js";
 
@@ -38,6 +38,8 @@ type Query = {
 export async function historyText(cwd: string, args: string): Promise<string> {
 	const trimmed = args.trim();
 	if (trimmed.startsWith("open ")) return openArtifactText(cwd, trimmed.slice("open ".length).trim());
+	if (trimmed.startsWith("delete ")) return deleteRunText(cwd, trimmed.slice("delete ".length).trim());
+	if (trimmed === "clear" || trimmed.startsWith("clear ")) return clearRunsText(cwd, trimmed.slice("clear".length).trim());
 	const queryText = trimmed.startsWith("list ") ? trimmed.slice("list ".length).trim() : trimmed;
 	const query = parseQuery(queryText);
 	const loaded = await loadHistory(cwd);
@@ -442,6 +444,76 @@ async function artifactTextForSummary(cwd: string, summary: ScrutinySummary, art
 function normalizeArtifact(token: string): HistoryArtifact | undefined {
 	if (["result", "summary", "surface", "packet", "responses", "verify"].includes(token)) return token as HistoryArtifact;
 	return undefined;
+}
+
+async function resolveRun(cwd: string, token: string): Promise<ScrutinySummary | undefined> {
+	const { summaries } = await loadSummaries(cwd);
+	if (token === "latest") return summaries[0];
+	const exact = summaries.filter((s) => s.runId === token);
+	if (exact.length === 1) return exact[0];
+	const suffix = summaries.filter((s) => s.runId.endsWith(token) || s.runId.startsWith(token));
+	return suffix.length === 1 ? suffix[0] : undefined;
+}
+
+async function deleteRunText(cwd: string, args: string): Promise<string> {
+	const parts = args.split(/\s+/).filter(Boolean);
+	const confirmed = parts.includes("--yes");
+	const token = parts.find((p) => p !== "--yes");
+	if (!token) return "# scrutiny history\n\nusage: `/scrutiny history delete <runId|latest> [--yes]`";
+	const summary = await resolveRun(cwd, token);
+	if (!summary) return `# scrutiny history\n\nrun not found: \`${token}\``;
+	if (!confirmed) {
+		const preview = await previewRun(cwd, summary.runId);
+		return [
+			"# scrutiny history delete (preview)",
+			"",
+			`run: ${summary.runId} · ${summary.surface} · ${summary.status}`,
+			`dir: ${preview.runDir}`,
+			`files: ${preview.files.length} · ${formatBytes(preview.bytes)}`,
+			"",
+			"this removes the run dir and rebuilds index.jsonl. `.pi/scrutiny.json` is never touched.",
+			"confirm: `/scrutiny history delete " + token + " --yes`",
+		].join("\n");
+	}
+	const result = await deleteRun(cwd, summary.runId);
+	if (!result.deleted) return `# scrutiny history\n\nrun dir not found for ${summary.runId} (already removed?).`;
+	return [
+		"# scrutiny history delete",
+		"",
+		`deleted: ${result.runId}`,
+		`files removed: ${result.removedFiles.length}`,
+		`index rebuilt: ${result.indexRebuilt ? "yes" : "no"} · remaining runs: ${result.remainingCount}`,
+	].join("\n");
+}
+
+async function clearRunsText(cwd: string, args: string): Promise<string> {
+	const confirmed = args.trim() === "--yes";
+	const { summaries } = await loadSummaries(cwd);
+	if (!confirmed) {
+		let bytes = 0;
+		for (const s of summaries) { bytes += (await previewRun(cwd, s.runId)).bytes; }
+		return [
+			"# scrutiny history clear (preview)",
+			"",
+			`runs: ${summaries.length} · total ${formatBytes(bytes)}`,
+			"this deletes every scr_* run dir and empties index.jsonl. `.pi/scrutiny.json` is never touched.",
+			"confirm: `/scrutiny history clear --yes`",
+		].join("\n");
+	}
+	const result = await deleteAllRuns(cwd);
+	return [
+		"# scrutiny history clear",
+		"",
+		`runs deleted: ${result.deletedCount}`,
+		`files removed: ${result.removedFiles.length}`,
+		`index: empty`,
+	].join("\n");
+}
+
+function formatBytes(n: number): string {
+	if (n < 1024) return `${n}B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+	return `${(n / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 function topBorder(width: number, title: string, theme: Theme): string {

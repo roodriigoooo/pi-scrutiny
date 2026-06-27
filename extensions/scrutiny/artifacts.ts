@@ -208,6 +208,95 @@ export function isInside(cwd: string, file: string): boolean {
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+export type RunPreview = { runId: string; runDir: string; files: string[]; bytes: number; exists: boolean };
+
+export type DeleteResult = { runId: string; deleted: boolean; runDir: string; removedFiles: string[]; indexRebuilt: boolean; remainingCount: number };
+
+export type ClearResult = { deletedCount: number; removedFiles: string[]; remainingCount: number };
+
+/** Rebuild index.jsonl from remaining run-dir summaries. Returns remaining count. */
+export async function rebuildIndex(cwd: string): Promise<number> {
+	const { summaries } = await scanSummaries(cwd);
+	await writeIndex(cwd, summaries);
+	return summaries.length;
+}
+
+/** Preview a run dir's files and bytes without deleting. Guarded to dataDir children only. */
+export async function previewRun(cwd: string, runId: string): Promise<RunPreview> {
+	const target = runDir(cwd, runId);
+	if (!isRunChild(cwd, runId) || !(await isDirectory(target))) return { runId, runDir: target, files: [], bytes: 0, exists: false };
+	const files = await listFiles(target);
+	let bytes = 0;
+	for (const file of files) {
+		try { bytes += (await fs.stat(path.join(target, file))).size; } catch { /* deleted mid-walk */ }
+	}
+	return { runId, runDir: target, files, bytes, exists: true };
+}
+
+/** Delete one run dir and rebuild the index. Never touches .pi/scrutiny.json; never escapes dataDir. */
+export async function deleteRun(cwd: string, runId: string): Promise<DeleteResult> {
+	const target = runDir(cwd, runId);
+	if (!isRunChild(cwd, runId) || !(await isDirectory(target))) {
+		return { runId, deleted: false, runDir: target, removedFiles: [], indexRebuilt: false, remainingCount: await countSummaries(cwd) };
+	}
+	const removedFiles = await listFiles(target);
+	await fs.rm(target, { recursive: true, force: true });
+	const remainingCount = await rebuildIndex(cwd);
+	return { runId, deleted: true, runDir: target, removedFiles, indexRebuilt: true, remainingCount };
+}
+
+/** Delete every scr_* run dir under dataDir and empty the index. Never touches .pi/scrutiny.json. */
+export async function deleteAllRuns(cwd: string): Promise<ClearResult> {
+	const dir = dataDir(cwd);
+	let entries: import("node:fs").Dirent[];
+	try { entries = await fs.readdir(dir, { withFileTypes: true }); }
+	catch { return { deletedCount: 0, removedFiles: [], remainingCount: 0 }; }
+	let deletedCount = 0;
+	const removedFiles: string[] = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(RUN_PREFIX)) continue;
+		const target = path.join(dir, entry.name);
+		removedFiles.push(...(await listFiles(target)).map((f) => path.join(entry.name, f)));
+		await fs.rm(target, { recursive: true, force: true });
+		deletedCount += 1;
+	}
+	await writeIndex(cwd, []);
+	return { deletedCount, removedFiles, remainingCount: 0 };
+}
+
+/** True if runId names a direct scr_* child of dataDir (no traversal, no escape). */
+function isRunChild(cwd: string, runId: string): boolean {
+	if (!runId.startsWith(RUN_PREFIX)) return false;
+	const rel = path.relative(dataDir(cwd), runDir(cwd, runId));
+	return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel) && !rel.includes(path.sep);
+}
+
+async function isDirectory(target: string): Promise<boolean> {
+	try { return (await fs.stat(target)).isDirectory(); } catch { return false; }
+}
+
+async function listFiles(dir: string): Promise<string[]> {
+	const out: string[] = [];
+	const stack: Array<{ abs: string; rel: string }> = [{ abs: dir, rel: "" }];
+	while (stack.length) {
+		const { abs, rel } = stack.pop()!;
+		let entries: import("node:fs").Dirent[];
+		try { entries = await fs.readdir(abs, { withFileTypes: true }); }
+		catch { continue; }
+		for (const entry of entries) {
+			const childRel = rel ? path.join(rel, entry.name) : entry.name;
+			if (entry.isDirectory()) stack.push({ abs: path.join(abs, entry.name), rel: childRel });
+			else out.push(childRel);
+		}
+	}
+	return out.sort();
+}
+
+async function countSummaries(cwd: string): Promise<number> {
+	const { summaries } = await loadSummaries(cwd);
+	return summaries.length;
+}
+
 function parseIndex(content: string, warnings: string[]): ScrutinySummary[] {
 	const rows: ScrutinySummary[] = [];
 	const lines = content.split(/\r?\n/).filter(Boolean);
