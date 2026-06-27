@@ -11,6 +11,7 @@ npm run eval:smoke          # runs eval/out/{smoke.report.md,json}
 npm run eval:coverage      # unit-level surface catalog coverage (no subprocesses)
 npm run eval:scout         # unit-level context scout test (mock exec, no subprocesses)
 npm run eval:artifacts     # unit-level artifact memory test (temp cwd, no subprocesses)
+npm run eval:verify        # unit-level objective verify test (fake exec, no subprocesses)
 ```
 
 exit code is non-zero if any task fails or errors.
@@ -29,7 +30,11 @@ not black-box. imports `runContextScout` / `renderScoutMarkdown` / `pruneScoutCa
 
 ## artifacts suite (`eval:artifacts`)
 
-not black-box. imports `artifacts.ts` (which has no relative runtime imports, so no resolve hook needed) and exercises the `.pi/scrutiny` layout: data/run/index paths, surface artifact filenames, path-guarded artifact resolution, file hashing, freshness (fresh/stale/unknown), summary index append + load (sorted newest-first), and index repair by scanning run dirs. also scans extension sources to fail if anyone re-introduces layout logic outside `artifacts.ts`. no model keys, no `pi` subprocesses.
+not black-box. imports `artifacts.ts` (which has no relative runtime imports, so no resolve hook needed) and exercises the `.pi/scrutiny` layout: data/run/index paths, surface artifact filenames, path-guarded artifact resolution, file hashing, freshness (fresh/stale/unknown), summary index append + load (sorted newest-first), index repair by scanning run dirs, related-summary lookup, and safe delete/clear (config untouched, escape refused). also scans extension sources to fail if anyone re-introduces layout logic outside `artifacts.ts`. no model keys, no `pi` subprocesses.
+
+## verify suite (`eval:verify`)
+
+not black-box. imports `verify.ts` via the `_ts-resolve` hook and exercises `runVerifyChecks` with a fake exec: pass/fail/error status from exit codes, output truncation, per-check progress events (running -> terminal), empty check list, diff-stat capture, and `verifyProgressMessage` formatting. also scans `engine.ts` to fail if verify execution is re-declared outside `verify.ts`. no model keys, no real subprocesses.
 
 ## what the smoke suite checks (no model keys needed)
 

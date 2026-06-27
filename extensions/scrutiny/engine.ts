@@ -8,8 +8,9 @@ import { runDir as resolveRunDir } from "./artifacts.js";
 import { runModelTask } from "./runner.js";
 import { recordRunEnd, recordRunProgress, recordRunStart } from "./registry.js";
 import { writeRunResult } from "./summary.js";
-import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, ScoutReport, PanelResponse, VerifyCheck, VerifyReport } from "./types.js";
-import { createRunId, formatDuration, formatTokens, parseAnalysisJson, safeMkdir, truncate } from "./util.js";
+import type { PanelMode, ScrutinyAnalysis, ScrutinyParams, ScrutinyRunProgress, ScrutinyRunResult, ScrutinySurface, ScoutReport, PanelResponse, VerifyReport } from "./types.js";
+import { createRunId, formatDuration, formatTokens, parseAnalysisJson, safeMkdir } from "./util.js";
+import { runVerifyChecks, verifyProgressMessage } from "./verify.js";
 
 type ExecLike = (command: string, args: string[], options?: { timeout?: number; signal?: AbortSignal }) => Promise<{ stdout?: string; stderr?: string; code?: number; killed?: boolean }>;
 
@@ -230,7 +231,7 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 		progress = { ...progress, message: "running objective verify checks", updatedAt: Date.now() };
 		emit(input, progress);
 		verify = await withProgressHeartbeat(
-			() => runVerify({
+			() => runVerifyChecks({
 				cwd: input.cwd,
 				exec: input.exec,
 				config,
@@ -311,7 +312,7 @@ async function runVerifyOnly(input: {
 	};
 	emit({ onProgress }, progress);
 	const verify = await withProgressHeartbeat(
-		() => runVerify({
+		() => runVerifyChecks({
 			cwd,
 			exec,
 			config,
@@ -345,53 +346,6 @@ async function runVerifyOnly(input: {
 	return { result, brief };
 }
 
-type VerifyProgressEvent = {
-	name: string;
-	index: number;
-	total: number;
-	status: "running" | "pass" | "fail" | "error";
-	durationMs?: number;
-};
-
-async function runVerify(input: { cwd: string; exec: ExecLike; config: import("./types.js").ScrutinyConfig; signal?: AbortSignal; onCheckProgress?: (event: VerifyProgressEvent) => void }): Promise<VerifyReport> {
-	const startedAt = Date.now();
-	const checks: VerifyCheck[] = [];
-	const total = input.config.verifyChecks.length;
-	for (let index = 0; index < total; index++) {
-		const spec = input.config.verifyChecks[index]!;
-		const checkStart = Date.now();
-		input.onCheckProgress?.({ name: spec.name, index, total, status: "running" });
-		try {
-			const result = await input.exec(spec.command, spec.args ?? [], { timeout: spec.timeoutMs ?? input.config.verifyTimeoutMs, signal: input.signal });
-			const durationMs = Date.now() - checkStart;
-			const code = result.code ?? 0;
-			const output = `${result.stdout ?? ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
-			if (code === 0) {
-				checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "pass", exitCode: code, output: truncate(output, 4_000), durationMs });
-				input.onCheckProgress?.({ name: spec.name, index, total, status: "pass", durationMs });
-			} else {
-				checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "fail", exitCode: code, output: truncate(output, 4_000), durationMs });
-				input.onCheckProgress?.({ name: spec.name, index, total, status: "fail", durationMs });
-			}
-		} catch (error) {
-			const durationMs = Date.now() - checkStart;
-			checks.push({ name: spec.name, command: `${spec.command} ${(spec.args ?? []).join(" ")}`.trim(), status: "error", output: error instanceof Error ? error.message : String(error), durationMs });
-			input.onCheckProgress?.({ name: spec.name, index, total, status: "error", durationMs });
-		}
-	}
-	let diffStat: string | undefined;
-	try {
-		const stat = await input.exec("git", ["diff", "--stat"], { timeout: 5_000, signal: input.signal });
-		if (stat.code === 0 && stat.stdout?.trim()) diffStat = truncate(stat.stdout.trim(), 2_000);
-	} catch {
-		// diff optional
-	}
-	const passed = checks.filter((c) => c.status === "pass").length;
-	const failed = checks.filter((c) => c.status === "fail" || c.status === "error").length;
-	const skipped = checks.filter((c) => c.status === "skipped").length;
-	return { checks, diffStat, passed, failed, skipped, durationMs: Date.now() - startedAt };
-}
-
 async function withProgressHeartbeat<T>(work: () => Promise<T>, tick: () => void, intervalMs = PROGRESS_HEARTBEAT_MS): Promise<T> {
 	const timer = setInterval(() => {
 		try {
@@ -405,12 +359,6 @@ async function withProgressHeartbeat<T>(work: () => Promise<T>, tick: () => void
 	} finally {
 		clearInterval(timer);
 	}
-}
-
-function verifyProgressMessage(event: VerifyProgressEvent): string {
-	const pos = `${event.index + 1}/${event.total}`;
-	if (event.status === "running") return `verify ${pos}: ${event.name} running`;
-	return `verify ${pos}: ${event.name} ${event.status}${event.durationMs !== undefined ? ` in ${formatDuration(event.durationMs)}` : ""}`;
 }
 
 function resolveSurface(params: ScrutinyParams): ScrutinySurface {
