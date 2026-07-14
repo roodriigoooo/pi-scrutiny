@@ -8,6 +8,7 @@ no internal api coupling. no new dependencies. node native type-stripping (`--ex
 
 ```bash
 npm run eval:smoke          # runs eval/out/{smoke.report.md,json}
+npm run eval:templates      # panel/template resolver and migration contract
 npm run eval:coverage      # unit-level surface catalog coverage (no subprocesses)
 npm run eval:scout         # unit-level context scout test (mock exec, no subprocesses)
 npm run eval:artifacts     # unit-level artifact memory test (temp cwd, no subprocesses)
@@ -21,9 +22,13 @@ exit code is non-zero if any task fails or errors.
 
 extension sources keep `.js` import specifiers for pi/bun compatibility, which node `--experimental-strip-types` cannot resolve on its own. `eval/_ts-resolve.ts` registers an in-process resolve hook (no deps) that remaps relative `.js` specifiers to `.ts` when the `.ts` file exists, so unit tests can import extension modules directly. tests that need it run with `node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/<test>.ts`.
 
+## template suite (`eval:templates`)
+
+Unit-level contract suite for config v2. It validates named panel/template parsing, built-in template validation, panel/template composition and precedence, legacy migration behavior, forbidden strategy/lens combinations, roles cardinality and uncovered lenses, prompt identity/lens preservation, roles coverage semantics, and invalid-config artifact gating. Uses a temporary config and fake executor; no model calls.
+
 ## coverage suite (`eval:coverage`)
 
-not black-box. imports the surface catalog (`extensions/scrutiny/surfaces.ts`) directly and treats `SCRUTINY_SURFACES` as the source of truth, asserting every surface is wired with defaults, prompt specs, lenses, palette hints, action lines, docs, mode lines, and correct prompt→surface routing. also scans extension sources to fail if anyone re-introduces a per-surface table outside the catalog. fast, no model keys, no `pi` subprocesses.
+not black-box. imports the surface catalog and built-in templates directly. It asserts that surface identity, prompts, hints, action lines, docs, and routing remain catalog-owned, while strategy, lenses, and policies live only in templates. Fast, no model keys or `pi` subprocesses.
 
 ## scout suite (`eval:scout`)
 

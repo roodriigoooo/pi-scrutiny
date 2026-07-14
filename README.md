@@ -3,193 +3,172 @@
 [![npm version](https://img.shields.io/npm/v/@roodriigoooo/pi-scrutiny.svg)](https://www.npmjs.com/package/@roodriigoooo/pi-scrutiny)
 [![CI](https://github.com/roodriigoooo/pi-scrutiny/actions/workflows/ci.yml/badge.svg)](https://github.com/roodriigoooo/pi-scrutiny/actions/workflows/ci.yml)
 
-multi-model deliberation and objective repo verification for the pi coding agent.
+Multi-model deliberation and objective repository verification for the Pi coding agent.
 
-## why this exists
+## Why this exists
 
-openrouter fusion sends one hard prompt to several models at once and merges the answers. it works well for bounded research questions where you want diverse priors on the same problem. that was the original inspiration for this extension.
+Scrutiny collects independent evidence from multiple models, then leaves the decision to objective repo checks and human review. It never fuses patches or treats an LLM judge as a correctness arbiter.
 
-but fusion is not evidence that fusing model outputs helps with long-horizon coding. multi-turn coding workflows involve editing files, running tests, reading feedback, iterating. no amount of parallel prose from language models settles whether a change to a real repo is correct. tests, type checks, and human review do that.
+- Panels run a named lineup of models.
+- Templates define a reusable deliberation method.
+- Results are evidence for a later, explicitly requested action—not an automatic Pi turn or code edit.
 
-so scrutiny takes the part of fusion that is grounded (independent perspectives on a shared question) and drops the part that is not (textual merging as a correctness signal). what you get is:
+Consultation, not democracy. Deliberation, not patch fusion.
 
-- send a hard question to a panel of models, each answering independently from the same packet
-- fuse hypotheses, constraints, risks, and verification strategies, never patches
-- keep evidence available for human review or later explicitly requested agent work
-- the arbiter is objective repo tools, not an llm judge
+## Concepts
 
-consultation, not democracy. deliberation, not patch fusion.
+**Panel = who runs.** A panel is only a named model lineup and optional thinking levels.
 
-## what it does
+**Template = how a run executes.** A template selects a surface, deliberation strategy, role lenses when needed, packet context policy, judge policy, verify policy, and optionally a default panel.
 
-one command, `/scrutiny`, exposes six **surfaces**. each produces a distinct non-patch artifact:
+Panels and templates are deliberately independent. Multiple templates can reuse one panel, and a template can run with a different selected panel.
+
+### Deliberation strategies
+
+- **replicate**: every model receives the exact same prompt. Agreement and sharp disagreement are signals; disagreement is a stop signal that calls for more evidence, a narrower test, or stopping.
+- **roles**: each model receives one explicit lens. Coverage and gaps are signals; non-overlapping role output is not a contradiction.
+
+For roles templates, the panel may have fewer members than lenses. Assignments use the ordered prefix (`member 1 → lens 1`, and so on), and remaining lenses are reported as uncovered. A roles panel may never have more members than template lenses.
+
+`verify` is strategy-free: it runs objective checks with no model panel or judge.
+
+## Surfaces
 
 ```text
-consult      replicate mode: bounded research/synthesis for human review. trade-off explainer runs by default.
-hypotheses   replicate mode: ranked root causes + confirming evidence + minimal distinguishing tests. no automatic fix.
-criteria     replicate mode: acceptance criteria for human review: edge cases, backward-compat, migration, test cases.
-repo-map     roles mode: compact repo context for human review: symbols, call paths, tests, config, invariants.
-risks        roles mode: per-class risk review of a patch (concurrency, reactive-chain, api-compat, security, perf, migration, null, flaky). runs verify.
-verify       no panel: runs tests/typecheck/lint for human review. no judge. blocks.
+consult      built-in replicate template for bounded research and synthesis
+hypotheses   built-in replicate template for ranked root causes and tests
+criteria     built-in replicate template for acceptance criteria
+repo-map     built-in roles template for symbols, calls, tests, and config
+risks        built-in roles template for explicit risk-lens review
+verify       objective checks only; no panel and no judge
 ```
 
-## activation boundary
+The built-in template names are reserved: `consult`, `hypotheses`, `criteria`, `repo-map`, `risks`, and `verify`.
 
-Scrutiny starts only when you invoke `/scrutiny` or confirm through its palette. Natural-language requests do not start a run. There is no model-callable Scrutiny tool. Writing “Use Scrutiny…” in ordinary prose does not invoke it.
+## Activation boundary
 
-The palette shows exact task packet content and requires human confirmation before TUI deliberation spends panel input. Commands wait for active Pi work to settle before execution and publication.
+Scrutiny starts only when you invoke `/scrutiny` or confirm through its palette. Natural-language requests do not start a run, and there is no model-callable Scrutiny tool.
 
-## panel modes
+Before any panel spend, the TUI shows the exact task packet and requires confirmation. It shows the selected template, panel, strategy, model-to-lens assignments, uncovered lenses, and spend estimate. Results persist and Pi remains idle: no synthesis, diagnostics, edits, or implementation start automatically.
 
-two epistemic instruments, not stylistic variants:
-
-- **replicate** (`consult`, `hypotheses`, `criteria`): every panelist gets the same prompt. diversity comes from model priors. the signal is agreement or disagreement. sharp disagreement is a stop signal: gather more evidence, run a narrower test, or stop. do not smooth it into a synthesized answer.
-
-- **roles** (`repo-map`, `risks`): each panelist gets a different lens. diversity comes from task-splitting. the signal is coverage and gaps, not conflict. a concurrency reviewer saying "avoid X" and a security reviewer not mentioning X is not a disagreement. it is coverage of different facets.
-
-the analysis layer is honest about which mode it is in. disagreement is computed only in replicate mode. roles mode computes coverage and gaps instead.
-
-## how calls happen
-
-panelists run **sequentially**, one at a time. each panelist is a `pi` subprocess (`pi --mode json -p --no-session --model <model> --no-tools <prompt>`) that receives the full task packet and returns its analysis as structured markdown. the engine collects each response, then builds a deterministic evidence map (shared vocabulary, contradictions, unique insights, risks, coverage/gaps). optionally, a trade-off explainer model compares the panel outputs. optionally, verify runs objective repo checks.
-
-only one scrutiny run can be active at a time. if you call `/scrutiny` while a run is in progress, the second call is rejected with a clear message. this is deliberate: parallel scrutiny runs would compete for provider rate limits, make progress harder to read, and add cost without adding signal.
-
-## principles
-
-- **arbiter is objective, not textual.** correctness is decided by tests, type checks, static analysis, runtime, diff size, architecture constraints, and sometimes human review. an llm judge is weak as the final arbiter of a repo-wide change.
-- **do not fuse patches.** fusing N patches into one frankenstein diff that no model validated is the failure mode to avoid. fuse uncertainty, evidence, tests, plans, context, risks.
-- **disagreement is a stop signal only in replicate mode.** same-prompt panelists disagreeing on a load-bearing point means gather more evidence. role-lens panelists not overlapping means coverage, not conflict.
-- **sequential, not parallel.** panelists run one at a time. one run at a time. scrutiny is deliberation, not a race.
-- **judge demoted to trade-off explainer.** it never decides correctness. it only explains trade-offs, and only runs for `consult` by default.
-- **simplicity is protected.** few surfaces, legible activation, simple model selection.
-
-## configure
+## Configure
 
 ```text
 /scrutiny config edit           # global ~/.pi/agent/scrutiny.json
 /scrutiny config edit project   # project .pi/scrutiny.json (trusted projects only)
-/scrutiny config                # show active config + sources
+/scrutiny config                # sources, active panels/templates, diagnostics
 ```
 
-example `scrutiny.json`:
+Configuration sources merge in order: global → trusted project → environment. Named panels and templates merge by name; a later source replaces a same-named entry.
 
 ```json
 {
-  "panel": [
-    { "model": "openai-codex/gpt-5.4-mini", "thinking": "low" },
-    { "model": "opencode-go/kimi-k2.7-code", "thinking": "off" }
-  ],
-  "judge": "openai-codex/gpt-5.4-mini",
-  "verifyChecks": [{ "name": "typecheck", "command": "npm", "args": ["run", "check"] }],
+  "schemaVersion": 2,
+  "defaultPanel": "balanced",
   "panels": {
-    "code-duo": {
-      "surface": "risks",
+    "balanced": {
       "members": [
-        { "model": "openai-codex/gpt-5.4-mini", "lens": "concurrency", "thinking": "low" },
-        { "model": "opencode-go/kimi-k2.7-code", "lens": "reactive-chain", "thinking": "off" }
+        { "model": "openai-codex/gpt-5.4-mini", "thinking": "low" },
+        { "model": "opencode-go/kimi-k2.7-code", "thinking": "off" }
+      ]
+    }
+  },
+  "templates": {
+    "release-risk": {
+      "surface": "risks",
+      "strategy": "roles",
+      "panel": "balanced",
+      "lenses": [
+        "api compatibility",
+        "failure semantics"
       ],
-      "verify": true,
-      "judgeMode": "off"
+      "includeGitDiff": true,
+      "judgeMode": "off",
+      "verify": true
     }
   }
 }
 ```
 
-`councils`/`panelists` still work as old aliases for `panels`/`members`. `PI_SCRUTINY_*` env vars still work and override config files.
-
-## install
-
-Pi Scrutiny is published on npm as [`@roodriigoooo/pi-scrutiny`](https://www.npmjs.com/package/@roodriigoooo/pi-scrutiny).
-
-Install it globally for pi:
-
-```bash
-pi install npm:@roodriigoooo/pi-scrutiny
-```
-
-Or install it for a single project:
-
-```bash
-pi install -l npm:@roodriigoooo/pi-scrutiny
-```
-
-Pin a specific version when you need reproducible installs:
-
-```bash
-pi install npm:@roodriigoooo/pi-scrutiny@0.1.0
-```
-
-You can also install directly from GitHub:
-
-```bash
-pi install git:github.com/roodriigoooo/pi-scrutiny
-```
-
-For local development from a checkout:
-
-```bash
-git clone https://github.com/roodriigoooo/pi-scrutiny.git
-cd pi-scrutiny
-npm install
-npm run check
-pi install "$(pwd)"
-```
-
-To try the extension for one session without installing it:
-
-```bash
-pi -e ./extensions/scrutiny.ts
-```
-
-After installation, restart pi and run `/scrutiny help`.
-
-## use
+Panel resolution is deterministic:
 
 ```text
-/scrutiny                                    # open palette (surface-first)
-/scrutiny models
-/scrutiny runs                               # recent runs + artifact paths (this session)
-/scrutiny history                            # interactive searchable artifact history
-/scrutiny history list retry                 # text history for scripts
-/scrutiny panels                             # list saved panel presets
-/scrutiny config                             # show active config + sources
-/scrutiny config edit                        # edit global config in pi
-/scrutiny verify:                            # run objective checks now
-/scrutiny @code-duo: review this patch       # run a saved panel
+selected panel in palette or command → template.panel → defaultPanel
+```
+
+Run-only controls can override git context, judge mode, or verify policy without editing the saved template.
+
+### Configuration rules
+
+- Panel members cannot declare a lens.
+- Every deliberation template requires `strategy`.
+- Replicate templates must omit `lenses`, even an empty array.
+- Roles templates require unique, non-empty lenses.
+- A roles panel may contain `1..N` members where `N` is the template lens count.
+- Verify templates omit strategy, lenses, panel, and judge policy.
+
+Invalid configurations are rejected before scouting, packet preview, runner locks, or model subprocesses. They create no `packet.md` or `responses.json`.
+
+### Migrating legacy configuration
+
+No config file is rewritten automatically. A config without `schemaVersion: 2` is read through a temporary compatibility parser and reports a migration diagnostic with a v2 example.
+
+- A legacy top-level `panel` becomes the synthetic `default` panel.
+- A legacy saved bundled panel becomes a same-named v2 panel plus a same-named template whose default panel points to it.
+- Legacy roles member lenses become the template’s effective lenses, including the historical fallback lenses.
+- Legacy replicate member lenses are discarded because replicate execution never used them.
+
+The legacy raw keys remain readable temporarily for migration, but public commands and documentation use only panels and templates.
+
+## Use
+
+```text
+/scrutiny                                    # open the palette
+/scrutiny models                             # current default lineup
+/scrutiny panels                             # model lineups only
+/scrutiny templates                          # strategy and policies
+/scrutiny runs                               # recent run artifacts
+/scrutiny history                            # searchable artifact history
+/scrutiny config edit [project]              # edit v2 configuration
+/scrutiny verify:                            # run objective checks
+/scrutiny @release-risk: review this patch   # choose a template directly
 /scrutiny risks: review this webflux retry patch
 /scrutiny hypotheses: intermittent offset commit on kafka consumer
-/scrutiny criteria: migrate orders service to new idempotency key
 /scrutiny ask compare these two implementation plans
 ```
 
-press **ctrl+p** in the palette to cycle through saved panels. Review the exact packet before confirming panel spend.
+In the palette, `Tab` cycles templates and `Ctrl+P` cycles panels independently. Switching to `verify` hides the panel without deleting the retained selection.
 
-## flow
+## Runtime and artifacts
 
-surfaces run **inline** and stream a compact status line while the panel works. press **esc** to cancel. deliberation takes time; that is expected.
+Panelists run sequentially, one at a time, in `pi` subprocesses with tools disabled by default. The engine records template, panel, strategy, assignments, and unassigned lenses in `result.json` and per-surface artifacts.
 
-runs persist on disk under `.pi/scrutiny/<run-id>/` (`packet.md`, `responses.json`, per-surface JSON, `verify.json`, `result.json`). `/scrutiny history` opens searchable artifact history backed by `.pi/scrutiny/index.jsonl`.
+Runs persist under `.pi/scrutiny/<run-id>/`:
 
-results display as custom messages and persist on disk. Pi remains idle, and each result stays in context for a later human prompt. No synthesis, diagnostics, edits, or implementation begin automatically. Each brief offers a possible next step for human choice, then states that Scrutiny stops.
+```text
+packet.md        # only after valid config and packet confirmation
+responses.json   # only after models begin
+result.json
+summary.json
+<surface>.json
+verify.json       # when verify ran
+```
 
-## release
+`/scrutiny history` reads the persisted summary index. Objective repo checks—not textual synthesis—remain the correctness arbiter.
 
-Releases are handled by GitHub Actions:
+## Development
 
-- `CI` runs on pushes and pull requests, then typechecks and verifies package contents with `npm pack --dry-run`.
-- `Release` is a manual workflow. Choose a semver bump and npm dist tag; it runs the same verification, bumps `package.json` and `package-lock.json`, pushes the release commit and tag, publishes to npm with provenance, and creates the GitHub release.
+```bash
+npm install
+npm run check
+npm run eval:templates
+npm run eval:boundaries
+npm run eval:coverage
+npm run eval:scout
+npm run eval:artifacts
+npm run eval:verify
+npm run eval:normalize
+npm run pack:dry
+```
 
-To publish from GitHub, add an npm automation token with publish access as the repository secret `NPM_TOKEN`.
-
-## defaults
-
-- 2 panelists is the intended shape for deliberation
-- `consult`, `hypotheses`, `criteria` use replicate mode (same prompt, disagreement is signal)
-- `repo-map`, `risks` use roles mode (assigned lenses, coverage/gaps is signal)
-- panelists run sequentially, one at a time, `--no-tools` by default
-- only one scrutiny run active at a time
-- panel timeout: 180s per panelist (configurable via `PI_SCRUTINY_PANEL_TIMEOUT_MS`)
-- no auto-spend
-- trade-off explainer skipped except `consult` (or `judgeMode: on`)
-- `risks` and `verify` run objective repo checks
+The package preserves explicit activation, packet confirmation, inline/idle completion, and no automatic agent turn.
