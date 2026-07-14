@@ -15,29 +15,35 @@ so scrutiny takes the part of fusion that is grounded (independent perspectives 
 
 - send a hard question to a panel of models, each answering independently from the same packet
 - fuse hypotheses, constraints, risks, and verification strategies, never patches
-- let one coding agent act against the repo and tests
+- keep evidence available for human review or later explicitly requested agent work
 - the arbiter is objective repo tools, not an llm judge
 
 consultation, not democracy. deliberation, not patch fusion.
 
 ## what it does
 
-one tool, `scrutiny_consult`, and one command, `/scrutiny`, expose six **surfaces**. each produces a distinct non-patch artifact:
+one command, `/scrutiny`, exposes six **surfaces**. each produces a distinct non-patch artifact:
 
 ```text
-consult      replicate mode: bounded research/synthesis. trade-off explainer runs by default.
-hypotheses   replicate mode: ranked root causes + confirming evidence + minimal distinguishing tests. no fix yet.
-criteria     replicate mode: acceptance spec: edge cases, backward-compat, migration, test cases.
-repo-map     roles mode: compact context (symbols, call paths, tests, config, invariants) for an upcoming edit.
+consult      replicate mode: bounded research/synthesis for human review. trade-off explainer runs by default.
+hypotheses   replicate mode: ranked root causes + confirming evidence + minimal distinguishing tests. no automatic fix.
+criteria     replicate mode: acceptance criteria for human review: edge cases, backward-compat, migration, test cases.
+repo-map     roles mode: compact repo context for human review: symbols, call paths, tests, config, invariants.
 risks        roles mode: per-class risk review of a patch (concurrency, reactive-chain, api-compat, security, perf, migration, null, flaky). runs verify.
-verify       no panel: runs tests/typecheck/lint as objective arbiter. no judge. blocks.
+verify       no panel: runs tests/typecheck/lint for human review. no judge. blocks.
 ```
+
+## activation boundary
+
+Scrutiny starts only when you invoke `/scrutiny` or confirm through its palette. Natural-language requests do not start a run. There is no model-callable Scrutiny tool. Writing “Use Scrutiny…” in ordinary prose does not invoke it.
+
+The palette shows exact task packet content and requires human confirmation before TUI deliberation spends panel input. Commands wait for active Pi work to settle before execution and publication.
 
 ## panel modes
 
 two epistemic instruments, not stylistic variants:
 
-- **replicate** (`consult`, `hypotheses`, `criteria`): every panelist gets the same prompt. diversity comes from model priors. the signal is agreement or disagreement. sharp disagreement is a stop signal: gather more evidence, run a narrower test, or ask the human. do not smooth it into a synthesized answer.
+- **replicate** (`consult`, `hypotheses`, `criteria`): every panelist gets the same prompt. diversity comes from model priors. the signal is agreement or disagreement. sharp disagreement is a stop signal: gather more evidence, run a narrower test, or stop. do not smooth it into a synthesized answer.
 
 - **roles** (`repo-map`, `risks`): each panelist gets a different lens. diversity comes from task-splitting. the signal is coverage and gaps, not conflict. a concurrency reviewer saying "avoid X" and a security reviewer not mentioning X is not a disagreement. it is coverage of different facets.
 
@@ -157,9 +163,7 @@ After installation, restart pi and run `/scrutiny help`.
 /scrutiny ask compare these two implementation plans
 ```
 
-press **ctrl+p** in the palette to cycle through saved panels.
-
-or let the main model call `scrutiny_consult` when the extra spend is worth it.
+press **ctrl+p** in the palette to cycle through saved panels. Review the exact packet before confirming panel spend.
 
 ## flow
 
@@ -167,7 +171,7 @@ surfaces run **inline** and stream a compact status line while the panel works. 
 
 runs persist on disk under `.pi/scrutiny/<run-id>/` (`packet.md`, `responses.json`, per-surface JSON, `verify.json`, `result.json`). `/scrutiny history` opens searchable artifact history backed by `.pi/scrutiny/index.jsonl`.
 
-every brief ends with one machine-actionable line: `RECOMMENDED NEXT ACTION: ...`. that is what the main agent acts on. prose lives in the expanded view and history.
+results display as custom messages and persist on disk. Pi remains idle, and each result stays in context for a later human prompt. No synthesis, diagnostics, edits, or implementation begin automatically. Each brief offers a possible next step for human choice, then states that Scrutiny stops.
 
 ## release
 
