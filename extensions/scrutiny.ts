@@ -1,20 +1,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
 import { councilToParams, exampleConfigJson, projectConfigPath, readScrutinyConfig, userConfigPath } from "./scrutiny/config.js";
 import { SCRUTINY_PACKET_PREVIEW_CANCELLED, runScrutiny } from "./scrutiny/engine.js";
 import { historyText, showHistoryPicker } from "./scrutiny/history.js";
 import { confirmPacketPreview } from "./scrutiny/preview.js";
 import { activeProgresses, recentRuns } from "./scrutiny/registry.js";
 import { showScrutinyPalette } from "./scrutiny/palette.js";
-import { SCRUTINY_SURFACES, SCRUTINY_SURFACE_SET, SURFACE_DOCS } from "./scrutiny/surfaces.js";
+import { SCRUTINY_STOP_STATEMENT, SCRUTINY_SURFACES, SCRUTINY_SURFACE_SET, SURFACE_DOCS } from "./scrutiny/surfaces.js";
 import type { ScrutinyParams, ScrutinySurface } from "./scrutiny/types.js";
-import { scrutinyStatusText, renderScrutinyCall, renderScrutinyDock, renderScrutinyMessage, renderScrutinyResult } from "./scrutiny/ui.js";
-
-const SurfaceEnum = StringEnum(SCRUTINY_SURFACES);
-const JudgeModeEnum = StringEnum(["auto", "off", "on"] as const);
+import { scrutinyStatusText, renderScrutinyDock, renderScrutinyMessage } from "./scrutiny/ui.js";
 
 function refreshScrutinyChrome(ctx: ExtensionContext, latest?: unknown): void {
 	if (!ctx.hasUI) return;
@@ -35,63 +30,34 @@ function clearScrutinyChrome(ctx: ExtensionContext): void {
 	ctx.ui.setWidget("scrutiny", undefined);
 }
 
+type ScrutinyMessage = {
+	customType: "scrutiny-result";
+	content: string;
+	display: boolean;
+	details: unknown;
+};
+
+function publishScrutinyMessage(pi: ExtensionAPI, message: ScrutinyMessage): void {
+	pi.sendMessage(message, { triggerTurn: false });
+}
+
+async function waitForPiIdle(ctx: ExtensionCommandContext): Promise<void> {
+	if (ctx.isIdle()) return;
+	if (ctx.hasUI) ctx.ui.setStatus("scrutiny", "scrutiny waiting for Pi");
+	try {
+		await ctx.waitForIdle();
+	} finally {
+		if (ctx.hasUI) ctx.ui.setStatus("scrutiny", undefined);
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerMessageRenderer("scrutiny-result", renderScrutinyMessage);
 
-	pi.registerTool({
-		name: "scrutiny_consult",
-		label: "Scrutiny Consult",
-		description: [
-			"Run a multi-model panel deliberation surface, OR run objective repo verification. This is NOT patch scrutiny.",
-			"Surfaces: consult/hypotheses/criteria use replicate mode (same prompt; agreement/disagreement signal); repo-map/risks use roles mode (separate lenses; coverage/gaps signal); verify runs tests/typecheck/lint as objective arbiter.",
-			"The main Pi agent synthesizes and acts. Arbiter is objective repo tools + human review, never an LLM judge. Do not fuse patches.",
-		].join(" "),
-		promptSnippet: "Consult a multi-model panel for hypotheses, criteria, context, or risk review; or run objective verify. Do not use to fuse patches.",
-		promptGuidelines: [
-			"Use scrutiny_consult for deliberation that benefits from independent perspectives: hypotheses, criteria, repo-map, risks, or bounded research synthesis.",
-			"Use the verify surface to run objective repo checks (tests/typecheck/lint) as the real arbiter of a change.",
-			"Never use scrutiny to merge patches from multiple models into one diff. Fuse uncertainty, evidence, tests, plans, context, risks — not final code.",
-			"Treat sharp disagreement as a stop signal only on replicate surfaces (consult/hypotheses/criteria). On roles surfaces (repo-map/risks), treat non-overlap as coverage/gaps.",
-			"Panelists run sequentially. Only one scrutiny run can be active at a time. Do not call scrutiny_consult in parallel.",
-			"Panel deliberation can take time. Mention that input cost is replicated across panel models when proposing an expensive panel.",
-		],
-		parameters: Type.Object({
-			prompt: Type.String({ description: "Focused task for the panel or the verify check description." }),
-			context: Type.Optional(Type.String({ description: "Extra compact context to include in the task packet." })),
-			surface: Type.Optional(SurfaceEnum),
-			panel: Type.Optional(Type.Array(Type.String({ description: "Model id, e.g. openai/gpt-5.5 or moonshotai/kimi-2.7-code." }), { description: "Panel models. Defaults to PI_SCRUTINY_PANEL." })),
-			judge: Type.Optional(Type.String({ description: "Trade-off explainer model. Defaults to PI_SCRUTINY_JUDGE or first panel model. Only runs for consult by default." })),
-			judgeMode: Type.Optional(JudgeModeEnum),
-			maxPanelModels: Type.Optional(Type.Number({ description: "Clamp panel size. Default from PI_SCRUTINY_MAX_PANEL_MODELS." })),
-			includeGitDiff: Type.Optional(Type.Boolean({ description: "Include current git diff in packet. Defaults per surface." })),
-			verify: Type.Optional(Type.Boolean({ description: "Run objective repo checks after the panel. Defaults per surface (on for risks/verify)." })),
-			tools: Type.Optional(Type.Array(Type.String(), { description: "Tools allowed to panel/judge. Default none. Prefer none." })),
-		}),
-		async execute(_toolCallId, params: ScrutinyParams, signal, onUpdate, ctx) {
-			const { result, brief } = await runScrutiny({
-				params,
-				cwd: ctx.cwd,
-				projectTrusted: ctx.isProjectTrusted(),
-				exec: (command, args, options) => pi.exec(command, args, { ...options, signal: options?.signal ?? signal }),
-				signal,
-				onProgress: (progress) => {
-					onUpdate?.({ content: [{ type: "text", text: scrutinyStatusText(progress) }], details: progress });
-					refreshScrutinyChrome(ctx, progress);
-				},
-			});
-			clearScrutinyChrome(ctx);
-			return {
-				content: [{ type: "text", text: brief }],
-				details: result,
-			};
-		},
-		renderCall: renderScrutinyCall,
-		renderResult: renderScrutinyResult,
-	});
-
 	pi.registerCommand("scrutiny", {
-		description: "Run or inspect Pi Scrutiny (usage: /scrutiny | help | models | runs | history | panels | config | <surface>: <prompt> | @<panel>: <prompt> | ask <prompt>)",
+		description: "Run or inspect Pi Scrutiny by explicit command (usage: /scrutiny | help | models | runs | history | panels | config | <surface>: <prompt> | @<panel>: <prompt> | ask <prompt>)",
 		handler: async (args, ctx) => {
+			await waitForPiIdle(ctx);
 			const runAndPublish = async (params: ScrutinyParams) => {
 				try {
 					if (ctx.hasUI) ctx.ui.setStatus("scrutiny", "scrutiny starting");
@@ -107,7 +73,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					});
 					clearScrutinyChrome(ctx);
-					pi.sendMessage({ customType: "scrutiny-result", content: brief, display: true, details: result });
+					publishScrutinyMessage(pi, { customType: "scrutiny-result", content: brief, display: true, details: result });
 				} catch (error) {
 					clearScrutinyChrome(ctx);
 					if (error instanceof Error && error.message === SCRUTINY_PACKET_PREVIEW_CANCELLED) {
@@ -125,31 +91,31 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (trimmed === "help") {
-				pi.sendMessage({ customType: "scrutiny-result", content: helpText(), display: true, details: { kind: "help" } });
+				publishScrutinyMessage(pi, { customType: "scrutiny-result", content: helpText(), display: true, details: { kind: "help" } });
 				return;
 			}
 			if (trimmed === "models") {
 				const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-				pi.sendMessage({ customType: "scrutiny-result", content: modelsText(config), display: true, details: { kind: "models" } });
+				publishScrutinyMessage(pi, { customType: "scrutiny-result", content: modelsText(config), display: true, details: { kind: "models" } });
 				return;
 			}
 			if (trimmed === "runs") {
-				pi.sendMessage({ customType: "scrutiny-result", content: runsText(), display: true, details: { kind: "runs" } });
+				publishScrutinyMessage(pi, { customType: "scrutiny-result", content: runsText(), display: true, details: { kind: "runs" } });
 				return;
 			}
 			if (trimmed === "history") {
 				const content = ctx.hasUI ? await showHistoryPicker(ctx) : await historyText(ctx.cwd, "");
-				if (content) pi.sendMessage({ customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
+				if (content) publishScrutinyMessage(pi, { customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
 				return;
 			}
 			if (trimmed.startsWith("history ")) {
 				const content = await historyText(ctx.cwd, trimmed.slice("history".length).trim());
-				pi.sendMessage({ customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
+				publishScrutinyMessage(pi, { customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
 				return;
 			}
 			if (trimmed === "panels" || trimmed === "councils") {
 				const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-				pi.sendMessage({ customType: "scrutiny-result", content: panelsText(config), display: true, details: { kind: "panels" } });
+				publishScrutinyMessage(pi, { customType: "scrutiny-result", content: panelsText(config), display: true, details: { kind: "panels" } });
 				return;
 			}
 			if (trimmed === "config" || trimmed.startsWith("config ")) {
@@ -188,7 +154,7 @@ async function handleConfigCommand(args: string, ctx: ExtensionCommandContext, p
 	const trimmed = args.trim();
 	if (!trimmed || trimmed === "show") {
 		const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-		pi.sendMessage({ customType: "scrutiny-result", content: configText(config), display: true, details: { kind: "config" } });
+		publishScrutinyMessage(pi, { customType: "scrutiny-result", content: configText(config), display: true, details: { kind: "config" } });
 		return;
 	}
 	if (trimmed === "edit" || trimmed === "edit global" || trimmed === "edit user") {
@@ -260,10 +226,16 @@ function helpText(): string {
 		"surfaces:",
 		...SCRUTINY_SURFACES.map((surface) => `- \`${surface}\` — ${SURFACE_DOCS[surface].mode}. ${SURFACE_DOCS[surface].description}`),
 		"",
+		"activation: Scrutiny starts only when you invoke /scrutiny or confirm through its palette. Natural-language requests do not start a run.",
+		"there is no model-callable Scrutiny tool. Writing \"Use Scrutiny...\" in ordinary prose does not invoke it.",
+		"before panel spend: human reviews and confirms exact packet in TUI.",
 		"flow: surfaces run inline and stream a status footer while the panel works. press esc to cancel a run.",
 		"mode: replicate means same prompt and disagreement signal; roles means lenses and coverage/gaps signal.",
 		"panelists run sequentially. one scrutiny run at a time.",
 		"arbiter is objective repo tools + human review, never an LLM judge. do not fuse patches.",
+		"completion: result displays and persists. Pi remains idle; result stays in context for a later human prompt.",
+		"no synthesis, diagnostics, edits, or implementation begin automatically.",
+		SCRUTINY_STOP_STATEMENT,
 		"",
 		"```text",
 		"/scrutiny                          # open palette",
@@ -284,7 +256,7 @@ function helpText(): string {
 		"/scrutiny ask compare these two implementation plans",
 		"```",
 		"",
-		"Tool: `scrutiny_consult`. Preferred setup: `/scrutiny config edit`. Env vars still work (`PI_SCRUTINY_PANEL=provider/model,provider/model`).",
+		"Preferred setup: `/scrutiny config edit`. Env vars still work (`PI_SCRUTINY_PANEL=provider/model,provider/model`).",
 	].join("\n");
 }
 

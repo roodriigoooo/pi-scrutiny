@@ -29,5 +29,8 @@ jobs:
       - name: Typecheck
         run: npm run check
 
+      - name: Control-boundary eval
+        run: npm run eval:boundaries
+
       - name: Verify npm package contents
         run: npm run pack:dry

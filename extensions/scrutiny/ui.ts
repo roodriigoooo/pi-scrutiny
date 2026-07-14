@@ -1,8 +1,7 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
 import { surfaceFacts } from "./normalize.js";
-import { SURFACE_DEFAULTS } from "./surfaces.js";
-import type { PanelMode, ScrutinyRunProgress, ScrutinyRunResult, PanelResponse, SurfaceFacts } from "./types.js";
+import type { ScrutinyRunProgress, ScrutinyRunResult, PanelResponse, SurfaceFacts } from "./types.js";
 import { formatDuration, formatTokens, truncate } from "./util.js";
 
 export function scrutinyStatusText(details: unknown): string {
@@ -21,30 +20,6 @@ export function scrutinyStatusText(details: unknown): string {
 		return `scrutiny ${details.surface}${mode} ${elapsed}${panel} ${progressPhase(details)}`;
 	}
 	return "scrutiny";
-}
-
-export function renderScrutinyResult(result: any, options: { expanded?: boolean; isPartial?: boolean }, theme: any, context?: any) {
-	const details = result.details;
-	if (isProgress(details)) return new Text(renderProgress(details, theme), 0, 0);
-	if (!isResult(details)) return new Text(result.content?.[0]?.text ?? "scrutiny", 0, 0);
-
-	if (options.expanded) {
-		const markdown = renderExpandedMarkdown(details);
-		return new Markdown(markdown, 0, 0, getMarkdownTheme());
-	}
-
-	const box = new Box(1, 0, (s: string) => theme.bg(details.status === "ok" ? "toolSuccessBg" : "toolErrorBg", s));
-	box.addChild(new Text(renderCompactResult(details, theme), 0, 0));
-	return box;
-}
-
-export function renderScrutinyCall(args: any, theme: any) {
-	const surface = args?.surface ?? "consult";
-	const panel = Array.isArray(args?.panel) && args.panel.length ? args.panel : undefined;
-	const judgeMode = args?.judgeMode ?? "auto";
-	const title = theme.fg("toolTitle", theme.bold("scrutiny_consult"));
-	const bits = [chip(theme, surface, "accent"), modeChip(theme, surface), chip(theme, panel ? `${panel.length} models` : "env panel", panel ? "success" : "muted"), chip(theme, `map:${judgeMode}`, judgeMode === "on" ? "warning" : "muted")];
-	return new Text(`${title} ${bits.join(" ")}`, 0, 0);
 }
 
 export function renderScrutinyMessage(message: any, { expanded }: { expanded?: boolean }, theme: any) {
@@ -99,11 +74,6 @@ function chip(theme: any, text: string, color: "accent" | "muted" | "success" | 
 	return theme.fg(color, `[${text}]`);
 }
 
-function modeChip(theme: any, surface: string): string {
-	const mode = (SURFACE_DEFAULTS as Partial<Record<string, { panelMode?: PanelMode }>>)[surface]?.panelMode;
-	return mode ? chip(theme, mode, mode === "replicate" ? "accent" : "muted") : chip(theme, "no panel", "muted");
-}
-
 function progressPhase(progress: ScrutinyRunProgress): string {
 	if (progress.judge?.status === "running") return "map";
 	if (/verify/i.test(progress.message ?? "")) return "verify";
@@ -127,21 +97,6 @@ export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any
 		if (current) lines.push(`    ${theme.fg("warning", "→")} ${theme.fg("toolOutput", current.model)} ${theme.fg("dim", current.role)}`);
 	}
 	return lines;
-}
-
-function renderProgress(progress: ScrutinyRunProgress, theme: any): string {
-	const ready = progress.panel.filter((item) => item.status === "ready").length;
-	const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
-	const mode = progress.panel_mode ? ` ${progress.panel_mode}` : "";
-	const status = progress.panel.length ? `${ready}/${progress.panel.length}` : "verify";
-	const lines: string[] = [];
-	lines.push(`${theme.fg("accent", "◐")} ${theme.bold("scrutiny")} ${theme.fg("accent", progress.surface)}${theme.fg("dim", mode)} ${theme.fg("muted", elapsed)} ${theme.fg("dim", status)} ${theme.fg("muted", progressPhase(progress))}`);
-	for (const item of progress.panel) {
-		const dur = item.endedAt ? formatDuration(item.endedAt - (item.startedAt ?? progress.startedAt)) : "";
-		lines.push(`  ${statusIcon(item.status, theme)} ${theme.fg("toolOutput", item.model)} ${theme.fg("dim", item.role)}${dur ? ` ${theme.fg("muted", dur)}` : ""}`);
-	}
-	if (progress.judge) lines.push(`  ${statusIcon(progress.judge.status, theme)} ${theme.fg("toolOutput", progress.judge.model)} ${theme.fg("dim", progress.judge.role)}`);
-	return lines.join("\n");
 }
 
 function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
@@ -296,13 +251,6 @@ function pushList(lines: string[], title: string, items: string[] | undefined): 
 	if (!items?.length) return;
 	lines.push(`### ${title}`);
 	for (const item of items) lines.push(`- ${item}`);
-}
-
-function statusIcon(status: string, theme: any): string {
-	if (status === "ready") return theme.fg("success", "●");
-	if (status === "running") return theme.fg("warning", "◐");
-	if (status === "failed") return theme.fg("error", "×");
-	return theme.fg("dim", "○");
 }
 
 function isProgress(value: unknown): value is ScrutinyRunProgress {

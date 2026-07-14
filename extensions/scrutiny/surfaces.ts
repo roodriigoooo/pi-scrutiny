@@ -3,7 +3,7 @@ import type { PanelMode, ScrutinySurface } from "./types.js";
 /**
  * Surface catalog: the single source of truth for surface identity and the
  * facts every caller needs (defaults, prompt shape, lenses, palette hints,
- * result action text, docs, mode lines, and prompt→surface routing).
+ * result next-step text, docs, mode lines, and prompt→surface routing).
  *
  * Adding or changing a surface should mostly touch this module. Callers
  * (config, packet, analysis, palette, ui, engine, entrypoint) import from here
@@ -55,7 +55,10 @@ export const SURFACE_PROMPT_SPECS: Record<Exclude<ScrutinySurface, "verify">, Su
 	consult: {
 		heading: "You are a Scrutiny panelist on a bounded research/synthesis question.",
 		panelHeadings: ["## Position", "## Evidence", "## Risks", "## Blind spots / missing evidence", "## Recommendation"],
-		trailer: ["Output is evidence for the main Pi agent to synthesize. It is not a patch."],
+		trailer: [
+			"Output is evidence for human review or later explicitly requested agent work. It is not a patch.",
+			"Do not assume implementation follows. Do not edit.",
+		],
 	},
 	hypotheses: {
 		heading: "You are a Scrutiny panelist on a debugging problem. Do not propose a fix yet.",
@@ -67,20 +70,25 @@ export const SURFACE_PROMPT_SPECS: Record<Exclude<ScrutinySurface, "verify">, Su
 			"## Missing context / needed inspection",
 		],
 		trailer: [
-			"Do not propose a fix. The main agent will run the best diagnostic, then act against the repo and tests.",
+			"Do not propose a fix. The user decides which diagnostic to run, then whether to request a fix after confirmation.",
+			"Do not assume implementation follows. Do not edit.",
 			"If you disagree with the obvious cause, say so explicitly — disagreement is a useful signal here.",
 		],
 	},
 	criteria: {
 		heading: "You are a Scrutiny panelist deriving acceptance criteria before any code is written.",
 		panelHeadings: ["## Acceptance criteria", "## Edge cases", "## Backward-compatibility risks", "## Migration concerns", "## Test cases", "## Missing context / needed inspection"],
-		trailer: ["The main agent will implement against the fused spec. Be concrete and testable."],
+		trailer: [
+			"Output concrete, testable criteria for human review or later explicitly requested agent work.",
+			"Do not assume implementation follows. Do not edit.",
+		],
 	},
 	"repo-map": {
-		heading: "You are a Scrutiny panelist mapping the repo for an upcoming edit. Output context, not an answer.",
+		heading: "You are a Scrutiny panelist mapping the repo for human review. Output context, not an answer.",
 		panelHeadings: ["## Relevant symbols", "## Call paths", "## Tests touched", "## Config / files", "## Invariants / prior patterns", "## Missing context / needed inspection"],
 		trailer: [
-			"Output is a compact repo map. The main agent will edit with this context.",
+			"Output a compact repo map for human review or later explicitly requested agent work.",
+			"Do not assume implementation follows. Do not edit.",
 			"Prefer exact symbol names, file paths, and line references over prose.",
 		],
 	},
@@ -91,6 +99,7 @@ export const SURFACE_PROMPT_SPECS: Record<Exclude<ScrutinySurface, "verify">, Su
 			"Focus on your assigned risk class. Do not review other classes.",
 			"For Java/Spring/Kafka/WebFlux: watch race conditions, reactive-chain mistakes, retry/circuit-breaker semantics, idempotency, message ordering.",
 			"Propose a concrete check or test that would catch each finding, not a fix to merge.",
+			"Findings are for human review or later explicitly requested agent work; do not assume implementation follows. Do not edit.",
 		],
 	},
 };
@@ -104,30 +113,32 @@ export const SURFACE_LENSES: Record<Exclude<ScrutinySurface, "verify">, string[]
 };
 
 export const SURFACE_HINTS: Record<ScrutinySurface, SurfaceHint> = {
-	consult: { produces: "produces a synthesized analysis (research/synthesis)", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	hypotheses: { produces: "produces ranked root causes + distinguishing tests, not a fix", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	criteria: { produces: "produces an acceptance spec to implement against, not a patch", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	"repo-map": { produces: "produces a compact repo map for an upcoming edit, not an answer", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
-	risks: { produces: "produces per-class risk findings + suggested checks, not a merged patch", flow: "↳ runs inline; panel then verify; esc cancels" },
-	verify: { produces: "produces objective pass/fail (tests, typecheck, lint). the arbiter", flow: "↳ runs inline; blocks until checks finish; esc cancels" },
+	consult: { produces: "produces an evidence map for human review (research/synthesis)", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
+	hypotheses: { produces: "produces ranked root causes + distinguishing tests; no automatic fix", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
+	criteria: { produces: "produces acceptance criteria for human review; no automatic implementation", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
+	"repo-map": { produces: "produces a compact repo map for human review; no automatic edit", flow: "↳ runs inline; streams status while the panel works; esc cancels" },
+	risks: { produces: "produces per-class risk findings + suggested checks; no automatic edits", flow: "↳ runs inline; panel then verify; esc cancels" },
+	verify: { produces: "produces objective pass/fail for human review; no automatic fixes", flow: "↳ runs inline; blocks until checks finish; esc cancels" },
 };
 
-export const SURFACE_ACTION_LINES: Record<ScrutinySurface, string> = {
-	consult: "RECOMMENDED NEXT ACTION: synthesize from evidence above. Treat panel as consultation, not authority.",
-	hypotheses: "RECOMMENDED NEXT ACTION: run best distinguishing test(s), then act against repo. Do not merge a fix until hypothesis is confirmed by evidence.",
-	criteria: "RECOMMENDED NEXT ACTION: implement against fused spec above. Run verify after edit.",
-	"repo-map": "RECOMMENDED NEXT ACTION: use map above as context for one coding agent to edit. Do not fuse edits from multiple panelists.",
-	risks: "RECOMMENDED NEXT ACTION: address findings by running suggested checks/tests, then editing. Do not merge risk-review prose into patch.",
-	verify: "RECOMMENDED NEXT ACTION: act on pass/fail above. Arbiter is checks, not any model.",
+export const SURFACE_NEXT_STEP_LINES: Record<ScrutinySurface, string> = {
+	consult: "POSSIBLE NEXT STEP: review evidence; choose synthesis, more evidence, or stop.",
+	hypotheses: "POSSIBLE NEXT STEP: choose a distinguishing test; request a fix only after confirmation.",
+	criteria: "POSSIBLE NEXT STEP: review or amend criteria; explicitly request implementation when ready.",
+	"repo-map": "POSSIBLE NEXT STEP: inspect gaps; explicitly hand map to one coding agent if desired.",
+	risks: "POSSIBLE NEXT STEP: choose findings to investigate; explicitly request checks or edits.",
+	verify: "POSSIBLE NEXT STEP: review failures; decide whether to investigate or request fixes.",
 };
+
+export const SCRUTINY_STOP_STATEMENT = "│ Scrutiny stops here. No Pi agent turn or code edit follows automatically.";
 
 export const SURFACE_DOCS: Record<ScrutinySurface, SurfaceDoc> = {
-	consult: { mode: "replicate mode", description: "bounded research/synthesis (validated use). trade-off explainer runs by default." },
+	consult: { mode: "replicate mode", description: "bounded research/synthesis for human review. trade-off explainer runs by default." },
 	hypotheses: { mode: "replicate mode", description: "ranked root causes + confirming evidence + minimal distinguishing tests. disagreement is signal." },
-	criteria: { mode: "replicate mode", description: "acceptance spec: edge cases, backward-compat, migration, test cases." },
-	"repo-map": { mode: "roles mode", description: "compact context (symbols, call paths, tests, config, invariants) for an upcoming edit." },
+	criteria: { mode: "replicate mode", description: "acceptance criteria for human review: edge cases, backward-compat, migration, test cases." },
+	"repo-map": { mode: "roles mode", description: "compact repo context for human review: symbols, call paths, tests, config, invariants." },
 	risks: { mode: "roles mode", description: "per-class risk review of a patch (concurrency, reactive-chain, api-compat, security, perf, migration, null, flaky). runs verify." },
-	verify: { mode: "objective arbiter", description: "runs tests/typecheck/lint as the objective arbiter. no panel, no judge." },
+	verify: { mode: "objective arbiter", description: "runs tests/typecheck/lint for human review. no panel, no judge." },
 };
 
 export function surfaceModeLine(surface: ScrutinySurface): string {

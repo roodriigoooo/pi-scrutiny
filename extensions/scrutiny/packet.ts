@@ -48,7 +48,7 @@ function sharedInstructions(): string[] {
 		"- Surface uncertainty and missing evidence.",
 		"- If the packet looks too narrow, name the missing surrounding files/systems/tests that must be inspected before trusting the result. Do not guess around missing context.",
 		"- You are running without tools unless the packet says otherwise. Do not say you will read files, call tools, or inspect the repo later; use only the packet and name missing evidence explicitly.",
-		"- Do not edit files. Do not propose a final patch to merge. This is deliberation, not the edit.",
+		"- Do not edit files. This is evidence for human review or later explicitly requested agent work; do not assume implementation follows.",
 		"- Keep answer dense. No preamble.",
 	];
 }
@@ -75,7 +75,7 @@ export function panelPrompt(input: { packet: string; role: string; surface: Scru
 export function judgePrompt(input: { packet: string; panelMode?: PanelMode; responses: Array<{ model: string; role: string; content: string }> }): string {
 	const panelMode = input.panelMode ?? "replicate";
 	const disagreementInstruction = panelMode === "replicate"
-		? "Set disagreement_signal=true when panelists disagree sharply on root cause, architecture, or a load-bearing claim. The main agent treats that as a stop signal to gather more evidence or ask the human, not as noise to smooth over."
+		? "Set disagreement_signal=true when panelists disagree sharply on root cause, architecture, or a load-bearing claim. Disagreement remains a stop signal; the user chooses more evidence, a narrower test, or stop. Do not smooth it over."
 		: "Panel mode is roles: each panelist used a different lens. Set disagreement_signal=false. Treat non-overlap as coverage/gaps, not contradiction; report gaps in blind_spots or risks.";
 	const responses = input.responses
 		.map((response, index) => [`### Panel ${index + 1}: ${response.model} (${response.role})`, response.content].join("\n"))
@@ -94,7 +94,7 @@ export function judgePrompt(input: { packet: string; panelMode?: PanelMode; resp
 		`}`,
 		"",
 		disagreementInstruction,
-		"You explain trade-offs only. The main Pi agent and objective repo checks are the arbiters.",
+		"Explain trade-offs only. The user chooses follow-up. Objective repo checks remain the correctness arbiter; do not imply automatic synthesis or implementation by Pi.",
 		"",
 		"Original task packet:",
 		input.packet,

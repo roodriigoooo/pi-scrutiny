@@ -1,5 +1,5 @@
 import type { PanelMode, ScrutinyAnalysis, PanelResponse, VerifyReport, ScrutinySurface } from "./types.js";
-import { SURFACE_ACTION_LINES, panelModeBriefLine } from "./surfaces.js";
+import { SCRUTINY_STOP_STATEMENT, SURFACE_NEXT_STEP_LINES, panelModeBriefLine } from "./surfaces.js";
 import { truncate } from "./util.js";
 
 export function formatFailureBrief(input: {
@@ -16,13 +16,14 @@ export function formatFailureBrief(input: {
 	lines.push(`run-id: ${input.runId}`);
 	lines.push(`artifacts: ${input.runDir}`);
 	lines.push("");
-	lines.push("Do NOT synthesize an answer from this. There is no usable panel evidence.");
-	lines.push("Tell the user the panel failed and show the reason + failed models below. Suggest fixing config (PI_SCRUTINY_PANEL, keys, network) and rerunning.");
+	lines.push("The panel failed; no usable panel evidence is available.");
+	lines.push("Review the reason and failed models below. If you want another run, fix configuration (PI_SCRUTINY_PANEL, keys, network) and invoke /scrutiny again.");
 	lines.push("");
 	if (input.failedModels.length > 0) {
 		lines.push("## Failed panelists");
 		for (const failed of input.failedModels) lines.push(`- ${failed.model}: ${truncate(failed.error, 240)}`);
 	}
+	lines.push("", SURFACE_NEXT_STEP_LINES[input.surface], SCRUTINY_STOP_STATEMENT);
 	return lines.join("\n").trim();
 }
 
@@ -74,7 +75,7 @@ export function buildDeterministicAnalysis(responses: PanelResponse[], panelMode
 		];
 	const blindSpots = mode === "roles"
 		? roleGaps(responses)
-		: ["Deterministic analysis does not infer all semantic contradictions; main Pi model should compare panel stances before final answer."];
+		: ["Deterministic analysis does not infer all semantic contradictions; review panel stances before choosing a follow-up."];
 	return {
 		consensus,
 		contradictions,
@@ -103,14 +104,14 @@ export function formatScrutinyBrief(input: {
 	lines.push(`# Scrutiny ${input.surface} result`);
 	lines.push(input.budgetLine);
 	if (input.panelMode) lines.push(panelModeBriefLine(input.surface, input.panelMode));
-	lines.push(input.judgeRan ? "evidence map: trade-off explainer ran" : "evidence map: deterministic only; main Pi model synthesizes");
+	lines.push(input.judgeRan ? "evidence map: trade-off explainer ran" : "evidence map: deterministic only; review panel stances yourself");
 	if (input.verify) lines.push(verifyLine(input.verify));
 	lines.push("");
 
 	if (input.analysis) {
 		if (input.analysis.disagreement_signal) {
 			lines.push("## ⚠ disagreement signal");
-			lines.push("Panel disagrees on a load-bearing point. Treat this as a stop signal: gather more evidence, run a narrower test, or ask the human. Do not smooth this into a synthesized answer.");
+			lines.push("Panel disagrees on a load-bearing point. Treat this as a stop signal: choose more evidence, a narrower test, or stop. Do not smooth this into a synthesized answer.");
 			lines.push("");
 		}
 		lines.push(`## Evidence map`);
@@ -144,7 +145,7 @@ export function formatScrutinyBrief(input: {
 		lines.push(formatVerifyReport(input.verify));
 	}
 
-	lines.push("", SURFACE_ACTION_LINES[input.surface]);
+	lines.push("", SURFACE_NEXT_STEP_LINES[input.surface], SCRUTINY_STOP_STATEMENT);
 	return lines.join("\n").trim();
 }
 
@@ -156,7 +157,7 @@ export function formatVerifyBrief(input: { verify: VerifyReport; budgetLine: str
 	lines.push("Verify is the objective arbiter. No LLM judge involved.");
 	lines.push("");
 	lines.push(formatVerifyReport(input.verify));
-	lines.push("", "RECOMMENDED NEXT ACTION: act on pass/fail above. Fix failing checks before any panel deliberation weighs in.");
+	lines.push("", SURFACE_NEXT_STEP_LINES.verify, SCRUTINY_STOP_STATEMENT);
 	return lines.join("\n").trim();
 }
 
