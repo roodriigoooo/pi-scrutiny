@@ -14,7 +14,7 @@ export const SMOKE_SUITE: EvalTask[] = [
 		description: "/scrutiny help emits one clean message",
 		surface: "consult",
 		prompt: "/scrutiny help",
-		expect: [{ name: "help text present", check: (ctx) => ctx.stdout.includes("pi-scrutiny") && ctx.stdout.includes("surfaces:") }],
+		expect: [{ name: "help text present", check: (ctx) => ctx.stdout.includes("pi-scrutiny") && ctx.stdout.includes("surfaces:") && ctx.stdout.includes("Natural-language requests do not start a run") }],
 	},
 	{
 		id: "models",

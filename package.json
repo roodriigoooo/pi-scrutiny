@@ -24,6 +24,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "eval:boundaries": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/control-boundary-test.ts",
     "eval:smoke": "node --experimental-strip-types eval/run-eval.ts smoke",
     "eval:coverage": "node --experimental-strip-types eval/coverage.ts",
     "eval:scout": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/scout-test.ts",
@@ -35,17 +36,13 @@
     "smoke:help": "pi --no-extensions -e ./extensions/scrutiny.ts --mode json --no-session \"/scrutiny help\""
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "@types/node": "^22.0.0",
-    "typebox": "*",
     "typescript": "^5.9.0"
   },
   "publishConfig": {

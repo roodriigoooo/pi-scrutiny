@@ -4,7 +4,8 @@ import {
 	DELIBERATION_SURFACES,
 	SCRUTINY_SURFACES,
 	SCRUTINY_SURFACE_SET,
-	SURFACE_ACTION_LINES,
+	SCRUTINY_STOP_STATEMENT,
+	SURFACE_NEXT_STEP_LINES,
 	SURFACE_DEFAULTS,
 	SURFACE_DOCS,
 	SURFACE_HINTS,
@@ -19,7 +20,7 @@ import type { ScrutinySurface } from "../extensions/scrutiny/types.ts";
 /**
  * Coverage test (issue #3): treats `SCRUTINY_SURFACES` as the source of truth
  * and checks every surface is wired everywhere it should be — defaults, prompt
- * specs, lenses, palette hints, action lines, docs, mode lines, and routing.
+ * specs, lenses, palette hints, human-choice next-step lines, docs, mode lines, and routing.
  * Also scans extension sources to catch anyone re-introducing a per-surface
  * table outside the catalog.
  *
@@ -114,12 +115,16 @@ const CHECKS: Check[] = [
 		},
 	},
 	{
-		name: "every surface has palette hint (produces + flow) and action line and docs",
+		name: "every surface has palette hint (produces + flow) and human-choice next-step line and docs",
 		run: () => {
 			for (const surface of SCRUTINY_SURFACES) {
 				const hint = SURFACE_HINTS[surface];
 				assert(Boolean(hint && hint.produces && hint.flow), `${surface}: palette hint incomplete`);
-				assert(typeof SURFACE_ACTION_LINES[surface] === "string" && SURFACE_ACTION_LINES[surface].length > 0, `${surface}: action line missing`);
+				const nextStep = SURFACE_NEXT_STEP_LINES[surface];
+				assert(typeof nextStep === "string" && nextStep.length > 0, `${surface}: next-step line missing`);
+				assert(nextStep.startsWith("POSSIBLE NEXT STEP:"), `${surface}: next-step line must give human choice`);
+				assert(nextStep.includes("choose") || nextStep.includes("review") || nextStep.includes("decide") || nextStep.includes("request") || nextStep.includes("explicitly"), `${surface}: next-step line lacks human-choice language`);
+				assert(SCRUTINY_STOP_STATEMENT.includes("No Pi agent turn or code edit follows automatically"), "stop statement changed");
 				const doc = SURFACE_DOCS[surface];
 				assert(Boolean(doc && doc.mode && doc.description), `${surface}: docs incomplete`);
 			}
@@ -131,7 +136,7 @@ const CHECKS: Check[] = [
 			const tables: Array<[string, Record<string, unknown>]> = [
 				["SURFACE_DEFAULTS", SURFACE_DEFAULTS as unknown as Record<string, unknown>],
 				["SURFACE_HINTS", SURFACE_HINTS as unknown as Record<string, unknown>],
-				["SURFACE_ACTION_LINES", SURFACE_ACTION_LINES as unknown as Record<string, unknown>],
+				["SURFACE_NEXT_STEP_LINES", SURFACE_NEXT_STEP_LINES as unknown as Record<string, unknown>],
 				["SURFACE_DOCS", SURFACE_DOCS as unknown as Record<string, unknown>],
 				["SURFACE_PROMPT_SPECS", SURFACE_PROMPT_SPECS as unknown as Record<string, unknown>],
 				["SURFACE_LENSES", SURFACE_LENSES as unknown as Record<string, unknown>],
@@ -185,7 +190,7 @@ const CHECKS: Check[] = [
 				"const SURFACE_SPECS",
 				"const SURFACE_LENSES",
 				"const SURFACE_HINTS",
-				"const SURFACE_ACTION_LINES",
+				"const SURFACE_NEXT_STEP_LINES",
 				"const SURFACE_DOCS",
 				"function inferSurface",
 				"function inferPaletteSurface",
