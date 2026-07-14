@@ -24,9 +24,10 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "eval:templates": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/templates-test.ts",
     "eval:boundaries": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/control-boundary-test.ts",
     "eval:smoke": "node --experimental-strip-types eval/run-eval.ts smoke",
-    "eval:coverage": "node --experimental-strip-types eval/coverage.ts",
+    "eval:coverage": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/coverage.ts",
     "eval:scout": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/scout-test.ts",
     "eval:artifacts": "node --experimental-strip-types eval/artifacts-test.ts",
     "eval:verify": "node --import ./eval/_ts-resolve.ts --experimental-strip-types eval/verify-test.ts",

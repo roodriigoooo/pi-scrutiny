@@ -94,7 +94,7 @@ function checkBriefBoundaries(): void {
 			? formatVerifyBrief({ verify, budgetLine: "budget: boundary probe" })
 			: formatScrutinyBrief({
 				surface,
-				panelMode: surface === "repo-map" || surface === "risks" ? "roles" : "replicate",
+				strategy: surface === "repo-map" || surface === "risks" ? "roles" : "replicate",
 				analysis: undefined,
 				responses: [response],
 				failedModels: [],

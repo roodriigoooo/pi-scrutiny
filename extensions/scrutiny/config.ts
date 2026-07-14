@@ -1,8 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { SCRUTINY_SURFACES } from "./surfaces.js";
-import type { Council, PanelMember, ScrutinyConfig, ScrutinyConfigSource, ScrutinyParams, ScrutinySurface, ThinkingLevel, VerifyCheckSpec } from "./types.js";
+import {
+	ConfigurationError,
+	isBuiltinTemplateName,
+	LEGACY_DEFAULT_PANEL_NAME,
+	legacyTemplateForPanel,
+	parsePanelDefinition,
+	parseTemplateDefinition,
+} from "./templates.js";
+import type {
+	JudgeMode,
+	PanelDefinition,
+	PanelMember,
+	ScrutinyConfig,
+	ScrutinyConfigSource,
+	ThinkingLevel,
+	VerifyCheckSpec,
+} from "./types.js";
 
 const DEFAULT_MAX_PANEL_MODELS = 4;
 const DEFAULT_PANEL_TIMEOUT_MS = 180_000;
@@ -21,7 +36,25 @@ const DEFAULT_VERIFY_CHECKS: VerifyCheckSpec[] = [
 
 export type ScrutinyConfigOptions = { cwd?: string; projectTrusted?: boolean };
 
-type ConfigPatch = Partial<Omit<ScrutinyConfig, "configSources">>;
+type ConfigPatch = {
+	defaultPanel?: string | undefined;
+	panels?: PanelDefinition[];
+	templates?: ScrutinyConfig["templates"];
+	judge?: string | undefined;
+	maxPanelModels?: number;
+	maxPanelOutputChars?: number;
+	maxJudgeOutputChars?: number;
+	panelTimeoutMs?: number;
+	judgeTimeoutMs?: number;
+	verifyTimeoutMs?: number;
+	includeGitDiff?: boolean;
+	gitDiffCharLimit?: number;
+	tools?: string[];
+	verifyChecks?: VerifyCheckSpec[];
+	diagnostics?: string[];
+};
+
+type LegacyPanelMember = PanelMember & { lens?: string };
 
 export function userConfigPath(): string {
 	return path.join(getAgentDir(), "scrutiny.json");
@@ -34,25 +67,29 @@ export function projectConfigPath(cwd: string): string {
 export function exampleConfigJson(): string {
 	return `${JSON.stringify(
 		{
-			panel: [
-				{ model: "openai-codex/gpt-5.4-mini", thinking: "low" },
-				{ model: "opencode-go/kimi-k2.7-code", thinking: "off" },
-			],
-			judge: "openai-codex/gpt-5.4-mini",
-			maxPanelModels: 4,
-			includeGitDiff: true,
-			verifyChecks: [{ name: "typecheck", command: "npm", args: ["run", "check"], timeoutMs: 60000 }],
+			schemaVersion: 2,
+			defaultPanel: "balanced",
 			panels: {
-				"code-duo": {
-					surface: "risks",
+				balanced: {
 					members: [
-						{ model: "openai-codex/gpt-5.4-mini", lens: "concurrency", thinking: "low" },
-						{ model: "opencode-go/kimi-k2.7-code", lens: "reactive-chain", thinking: "off" },
+						{ model: "openai-codex/gpt-5.4-mini", thinking: "low" },
+						{ model: "opencode-go/kimi-k2.7-code", thinking: "off" },
 					],
-					verify: true,
-					judgeMode: "off",
 				},
 			},
+			templates: {
+				"release-risk": {
+					surface: "risks",
+					strategy: "roles",
+					panel: "balanced",
+					lenses: ["api compatibility", "failure semantics"],
+					includeGitDiff: true,
+					judgeMode: "off",
+					verify: true,
+				},
+			},
+			judge: "openai-codex/gpt-5.4-mini",
+			verifyChecks: [{ name: "typecheck", command: "npm", args: ["run", "check"], timeoutMs: 60000 }],
 		},
 		null,
 		2,
@@ -62,6 +99,8 @@ export function exampleConfigJson(): string {
 export function readScrutinyConfig(options: ScrutinyConfigOptions = {}): ScrutinyConfig {
 	let config = baseConfig();
 	const configSources: ScrutinyConfigSource[] = [];
+	const diagnostics: string[] = [];
+	const configurationErrors: string[] = [];
 
 	for (const source of configFileSources(options)) {
 		if (source.status === "skipped" || source.status === "missing") {
@@ -70,71 +109,73 @@ export function readScrutinyConfig(options: ScrutinyConfigOptions = {}): Scrutin
 		}
 		try {
 			const raw = fs.readFileSync(source.path!, "utf8");
-			const patch = parseConfigObject(JSON.parse(raw));
+			const patch = parseConfigPatch(JSON.parse(raw), source.path!);
 			config = mergeConfig(config, patch);
+			diagnostics.push(...(patch.diagnostics ?? []));
 			configSources.push({ ...source, status: "loaded" });
 		} catch (error) {
-			configSources.push({ ...source, status: "error", reason: error instanceof Error ? error.message : String(error) });
+			const reason = error instanceof Error ? error.message : String(error);
+			configSources.push({ ...source, status: "error", reason });
+			configurationErrors.push(`${source.path}: ${reason}`);
 		}
 	}
 
-	const envPatch = readEnvPatch();
-	if (Object.keys(envPatch).length > 0) {
-		config = mergeConfig(config, envPatch);
-		configSources.push({ scope: "env", status: "loaded", reason: "PI_SCRUTINY_*" });
+	try {
+		const envPatch = readEnvPatch();
+		if (Object.keys(envPatch).length > 0) {
+			config = mergeConfig(config, envPatch);
+			diagnostics.push(...(envPatch.diagnostics ?? []));
+			configSources.push({ scope: "env", status: "loaded", reason: "PI_SCRUTINY_*" });
+		}
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		configSources.push({ scope: "env", status: "error", reason });
+			configurationErrors.push(`environment: ${reason}`);
 	}
 
-	return { ...config, configSources };
+	return { ...config, configSources, diagnostics, configurationErrors };
 }
 
 export function readEnvConfig(): ScrutinyConfig {
-	const envPatch = readEnvPatch();
-	const config = mergeConfig(baseConfig(), envPatch);
-	const configSources: ScrutinyConfigSource[] = Object.keys(envPatch).length > 0 ? [{ scope: "env", status: "loaded", reason: "PI_SCRUTINY_*" }] : [];
-	return { ...config, configSources };
-}
-
-export function resolvePanel(input: { panel?: string[]; panelMembers?: PanelMember[]; maxPanelModels?: number }, config: ScrutinyConfig): PanelMember[] {
-	const members = input.panelMembers?.length ? input.panelMembers : input.panel?.length ? input.panel.map((model) => ({ model })) : config.panel;
-	const unique = new Map<string, PanelMember>();
-	for (const member of members) {
-		const model = member.model.trim();
-		if (model) unique.set(model, { ...member, model });
+	let config = baseConfig();
+	const diagnostics: string[] = [];
+	try {
+		const envPatch = readEnvPatch();
+		config = mergeConfig(config, envPatch);
+		diagnostics.push(...(envPatch.diagnostics ?? []));
+		return {
+			...config,
+			configSources: Object.keys(envPatch).length > 0 ? [{ scope: "env", status: "loaded", reason: "PI_SCRUTINY_*" }] : [],
+			diagnostics,
+			configurationErrors: [],
+		};
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return { ...config, configSources: [{ scope: "env", status: "error", reason }], diagnostics, configurationErrors: [`environment: ${reason}`] };
 	}
-	return [...unique.values()].slice(0, input.maxPanelModels ?? config.maxPanelModels);
 }
 
-export function resolveJudge(input: { judge?: string }, config: ScrutinyConfig, panel: PanelMember[]): string | undefined {
-	return input.judge?.trim() || config.judge || panel[0]?.model;
+export function resolveJudge(input: { judge?: string }, config: ScrutinyConfig, panel?: PanelDefinition): string | undefined {
+	return input.judge?.trim() || config.judge || panel?.members[0]?.model;
 }
 
 export function resolveTools(input: { tools?: string[] }, config: ScrutinyConfig): string[] {
 	return (input.tools && input.tools.length > 0 ? input.tools : config.tools).map((tool) => tool.trim()).filter(Boolean);
 }
 
-export function loadCouncils(options: ScrutinyConfigOptions = {}): Council[] {
-	return readScrutinyConfig(options).councils;
-}
-
-export function findCouncil(name: string, options: ScrutinyConfigOptions = {}): Council | undefined {
-	return loadCouncils(options).find((c) => c.name === name);
-}
-
-export function councilToParams(council: Council, prompt: string): ScrutinyParams {
-	return {
-		prompt,
-		surface: council.surface,
-		panelMembers: council.panelists,
-		judge: council.judge,
-		judgeMode: council.judgeMode,
-		includeGitDiff: council.includeGitDiff,
-		verify: council.verify,
-	};
+export function parseConfigPatch(value: unknown, source = "config"): ConfigPatch {
+	if (!isRecord(value)) throw new ConfigurationError(`${source} must contain a JSON object`);
+	if (value.schemaVersion === 2) return parseV2Config(value, source);
+	if ("schemaVersion" in value) throw new ConfigurationError(`${source}.schemaVersion must be 2`);
+	return parseLegacyConfig(value, source);
 }
 
 function baseConfig(): ScrutinyConfig {
 	return {
-		panel: [],
+		schemaVersion: 2,
+		defaultPanel: undefined,
+		panels: [],
+		templates: [],
 		judge: undefined,
 		maxPanelModels: DEFAULT_MAX_PANEL_MODELS,
 		maxPanelOutputChars: DEFAULT_PANEL_OUTPUT_CHARS,
@@ -146,8 +187,9 @@ function baseConfig(): ScrutinyConfig {
 		gitDiffCharLimit: DEFAULT_DIFF_CHARS,
 		tools: [],
 		verifyChecks: DEFAULT_VERIFY_CHECKS,
-		councils: [],
 		configSources: [],
+		diagnostics: [],
+		configurationErrors: [],
 	};
 }
 
@@ -165,233 +207,293 @@ function configFileSources(options: ScrutinyConfigOptions): ScrutinyConfigSource
 	return sources;
 }
 
-function readEnvPatch(): ConfigPatch {
-	const patch: ConfigPatch = {};
-	if ("PI_SCRUTINY_PANEL" in process.env) patch.panel = parseCsv(process.env.PI_SCRUTINY_PANEL).map((model) => ({ model }));
-	if ("PI_SCRUTINY_JUDGE" in process.env) patch.judge = emptyToUndefined(process.env.PI_SCRUTINY_JUDGE);
-	if ("PI_SCRUTINY_MAX_PANEL_MODELS" in process.env) patch.maxPanelModels = parseIntEnv("PI_SCRUTINY_MAX_PANEL_MODELS", DEFAULT_MAX_PANEL_MODELS, 1, 8);
-	if ("PI_SCRUTINY_MAX_PANEL_OUTPUT_CHARS" in process.env) patch.maxPanelOutputChars = parseIntEnv("PI_SCRUTINY_MAX_PANEL_OUTPUT_CHARS", DEFAULT_PANEL_OUTPUT_CHARS, 2_000, 200_000);
-	if ("PI_SCRUTINY_MAX_JUDGE_OUTPUT_CHARS" in process.env) patch.maxJudgeOutputChars = parseIntEnv("PI_SCRUTINY_MAX_JUDGE_OUTPUT_CHARS", DEFAULT_JUDGE_OUTPUT_CHARS, 2_000, 200_000);
-	if ("PI_SCRUTINY_PANEL_TIMEOUT_MS" in process.env) patch.panelTimeoutMs = parseIntEnv("PI_SCRUTINY_PANEL_TIMEOUT_MS", DEFAULT_PANEL_TIMEOUT_MS, 5_000, 30 * 60_000);
-	if ("PI_SCRUTINY_JUDGE_TIMEOUT_MS" in process.env) patch.judgeTimeoutMs = parseIntEnv("PI_SCRUTINY_JUDGE_TIMEOUT_MS", DEFAULT_JUDGE_TIMEOUT_MS, 5_000, 30 * 60_000);
-	if ("PI_SCRUTINY_VERIFY_TIMEOUT_MS" in process.env) patch.verifyTimeoutMs = parseIntEnv("PI_SCRUTINY_VERIFY_TIMEOUT_MS", DEFAULT_VERIFY_TIMEOUT_MS, 5_000, 30 * 60_000);
-	if ("PI_SCRUTINY_INCLUDE_GIT_DIFF" in process.env) patch.includeGitDiff = parseBoolEnv("PI_SCRUTINY_INCLUDE_GIT_DIFF", true);
-	if ("PI_SCRUTINY_GIT_DIFF_CHARS" in process.env) patch.gitDiffCharLimit = parseIntEnv("PI_SCRUTINY_GIT_DIFF_CHARS", DEFAULT_DIFF_CHARS, 0, 200_000);
-	if ("PI_SCRUTINY_TOOLS" in process.env) patch.tools = parseCsv(process.env.PI_SCRUTINY_TOOLS);
-	if ("PI_SCRUTINY_VERIFY_CHECKS" in process.env) patch.verifyChecks = parseVerifyChecksJson(process.env.PI_SCRUTINY_VERIFY_CHECKS) ?? DEFAULT_VERIFY_CHECKS;
-	if ("PI_SCRUTINY_COUNCILS" in process.env) patch.councils = parseCouncilsJson(process.env.PI_SCRUTINY_COUNCILS) ?? [];
-	if ("PI_SCRUTINY_PANELS" in process.env) patch.councils = parseCouncilsJson(process.env.PI_SCRUTINY_PANELS) ?? [];
+function parseV2Config(input: Record<string, unknown>, source: string): ConfigPatch {
+	const patch = parseCommonConfig(input, source);
+	if ("defaultPanel" in input) patch.defaultPanel = optionalString(input.defaultPanel, `${source}.defaultPanel`);
+	if ("panels" in input) patch.panels = parseNamedPanels(input.panels, `${source}.panels`);
+	if ("templates" in input) patch.templates = parseNamedTemplates(input.templates, `${source}.templates`);
 	return patch;
 }
 
-function parseConfigObject(value: unknown): ConfigPatch {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-	const input = value as Record<string, unknown>;
+function parseLegacyConfig(input: Record<string, unknown>, source: string): ConfigPatch {
+	const patch = parseCommonConfig(input, source);
+	const panels: PanelDefinition[] = [];
+	const templates: ScrutinyConfig["templates"] = [];
+	const topLevel = "panel" in input ? parseLegacyMembers(input.panel, `${source}.panel`) : undefined;
+	if (topLevel?.length) {
+		panels.push({ name: LEGACY_DEFAULT_PANEL_NAME, members: stripLegacyLenses(topLevel) });
+		patch.defaultPanel = LEGACY_DEFAULT_PANEL_NAME;
+	}
+	if ("panels" in input || "councils" in input) {
+		const bundled = parseLegacyBundledPanels(input.panels ?? input.councils, `${source}.${"panels" in input ? "panels" : "councils"}`);
+		for (const entry of bundled) {
+			if (isBuiltinTemplateName(entry.name)) throw new ConfigurationError(`${source}: legacy saved panel "${entry.name}" conflicts with reserved built-in template name`);
+			if (panels.some((panel) => panel.name === entry.name)) throw new ConfigurationError(`${source}: duplicate panel name "${entry.name}"`);
+			if (entry.surface !== "verify") panels.push({ name: entry.name, members: stripLegacyLenses(entry.members) });
+			templates.push(legacyTemplateForPanel({
+				name: entry.name,
+				surface: entry.surface,
+				members: entry.members,
+				panel: entry.name,
+				judgeMode: entry.judgeMode,
+				includeGitDiff: entry.includeGitDiff,
+				verify: entry.verify,
+			}));
+		}
+	}
+	if (panels.length) patch.panels = panels;
+	if (templates.length) patch.templates = templates;
+	if (topLevel || "panels" in input || "councils" in input) {
+		patch.diagnostics = [
+			`${source}: legacy panel configuration was read without rewriting the file. Migrate to schemaVersion: 2; panels now contain only model/thinking members and templates own strategy, lenses, and policies.`,
+			`Example:\n${exampleConfigJson().trim()}`,
+		];
+	}
+	return patch;
+}
+
+function parseCommonConfig(input: Record<string, unknown>, source: string): ConfigPatch {
 	const patch: ConfigPatch = {};
-	const panel = parsePanelMembers(input.panel);
-	if (panel) patch.panel = panel;
-	const judge = parseString(input.judge);
-	if (judge !== undefined || "judge" in input) patch.judge = judge;
-	const maxPanelModels = parseNumber(input.maxPanelModels, 1, 8);
-	if (maxPanelModels !== undefined) patch.maxPanelModels = maxPanelModels;
-	const maxPanelOutputChars = parseNumber(input.maxPanelOutputChars, 2_000, 200_000);
-	if (maxPanelOutputChars !== undefined) patch.maxPanelOutputChars = maxPanelOutputChars;
-	const maxJudgeOutputChars = parseNumber(input.maxJudgeOutputChars, 2_000, 200_000);
-	if (maxJudgeOutputChars !== undefined) patch.maxJudgeOutputChars = maxJudgeOutputChars;
-	const panelTimeoutMs = parseNumber(input.panelTimeoutMs, 5_000, 30 * 60_000);
-	if (panelTimeoutMs !== undefined) patch.panelTimeoutMs = panelTimeoutMs;
-	const judgeTimeoutMs = parseNumber(input.judgeTimeoutMs, 5_000, 30 * 60_000);
-	if (judgeTimeoutMs !== undefined) patch.judgeTimeoutMs = judgeTimeoutMs;
-	const verifyTimeoutMs = parseNumber(input.verifyTimeoutMs, 5_000, 30 * 60_000);
-	if (verifyTimeoutMs !== undefined) patch.verifyTimeoutMs = verifyTimeoutMs;
-	const includeGitDiff = parseBoolValue(input.includeGitDiff);
-	if (includeGitDiff !== undefined) patch.includeGitDiff = includeGitDiff;
-	const gitDiffCharLimit = parseNumber(input.gitDiffCharLimit ?? input.gitDiffChars, 0, 200_000);
-	if (gitDiffCharLimit !== undefined) patch.gitDiffCharLimit = gitDiffCharLimit;
-	const tools = parseStringList(input.tools);
-	if (tools) patch.tools = tools;
-	const verifyChecks = parseVerifyChecksValue(input.verifyChecks);
-	if (verifyChecks) patch.verifyChecks = verifyChecks;
-	const councils = parseCouncilsValue(input.panels ?? input.councils);
-	if (councils) patch.councils = councils;
+	if ("judge" in input) patch.judge = optionalString(input.judge, `${source}.judge`);
+	if ("maxPanelModels" in input) patch.maxPanelModels = requiredNumber(input.maxPanelModels, `${source}.maxPanelModels`, 1, 8);
+	if ("maxPanelOutputChars" in input) patch.maxPanelOutputChars = requiredNumber(input.maxPanelOutputChars, `${source}.maxPanelOutputChars`, 2_000, 200_000);
+	if ("maxJudgeOutputChars" in input) patch.maxJudgeOutputChars = requiredNumber(input.maxJudgeOutputChars, `${source}.maxJudgeOutputChars`, 2_000, 200_000);
+	if ("panelTimeoutMs" in input) patch.panelTimeoutMs = requiredNumber(input.panelTimeoutMs, `${source}.panelTimeoutMs`, 5_000, 30 * 60_000);
+	if ("judgeTimeoutMs" in input) patch.judgeTimeoutMs = requiredNumber(input.judgeTimeoutMs, `${source}.judgeTimeoutMs`, 5_000, 30 * 60_000);
+	if ("verifyTimeoutMs" in input) patch.verifyTimeoutMs = requiredNumber(input.verifyTimeoutMs, `${source}.verifyTimeoutMs`, 5_000, 30 * 60_000);
+	if ("includeGitDiff" in input) patch.includeGitDiff = requiredBoolean(input.includeGitDiff, `${source}.includeGitDiff`);
+	if ("gitDiffCharLimit" in input || "gitDiffChars" in input) patch.gitDiffCharLimit = requiredNumber(input.gitDiffCharLimit ?? input.gitDiffChars, `${source}.gitDiffCharLimit`, 0, 200_000);
+	if ("tools" in input) patch.tools = requiredStringList(input.tools, `${source}.tools`);
+	if ("verifyChecks" in input) patch.verifyChecks = parseVerifyChecksValue(input.verifyChecks, `${source}.verifyChecks`);
 	return patch;
 }
 
 function mergeConfig(config: ScrutinyConfig, patch: ConfigPatch): ScrutinyConfig {
 	const next = { ...config };
-	if ("panel" in patch && patch.panel) next.panel = patch.panel;
+	if ("defaultPanel" in patch) next.defaultPanel = patch.defaultPanel;
+	if (patch.panels) next.panels = mergeNamed(config.panels, patch.panels);
+	if (patch.templates) next.templates = mergeNamed(config.templates, patch.templates);
 	if ("judge" in patch) next.judge = patch.judge;
-	if ("maxPanelModels" in patch && patch.maxPanelModels !== undefined) next.maxPanelModels = patch.maxPanelModels;
-	if ("maxPanelOutputChars" in patch && patch.maxPanelOutputChars !== undefined) next.maxPanelOutputChars = patch.maxPanelOutputChars;
-	if ("maxJudgeOutputChars" in patch && patch.maxJudgeOutputChars !== undefined) next.maxJudgeOutputChars = patch.maxJudgeOutputChars;
-	if ("panelTimeoutMs" in patch && patch.panelTimeoutMs !== undefined) next.panelTimeoutMs = patch.panelTimeoutMs;
-	if ("judgeTimeoutMs" in patch && patch.judgeTimeoutMs !== undefined) next.judgeTimeoutMs = patch.judgeTimeoutMs;
-	if ("verifyTimeoutMs" in patch && patch.verifyTimeoutMs !== undefined) next.verifyTimeoutMs = patch.verifyTimeoutMs;
-	if ("includeGitDiff" in patch && patch.includeGitDiff !== undefined) next.includeGitDiff = patch.includeGitDiff;
-	if ("gitDiffCharLimit" in patch && patch.gitDiffCharLimit !== undefined) next.gitDiffCharLimit = patch.gitDiffCharLimit;
-	if ("tools" in patch && patch.tools) next.tools = patch.tools;
-	if ("verifyChecks" in patch && patch.verifyChecks) next.verifyChecks = patch.verifyChecks;
-	if ("councils" in patch && patch.councils) next.councils = patch.councils;
+	if (patch.maxPanelModels !== undefined) next.maxPanelModels = patch.maxPanelModels;
+	if (patch.maxPanelOutputChars !== undefined) next.maxPanelOutputChars = patch.maxPanelOutputChars;
+	if (patch.maxJudgeOutputChars !== undefined) next.maxJudgeOutputChars = patch.maxJudgeOutputChars;
+	if (patch.panelTimeoutMs !== undefined) next.panelTimeoutMs = patch.panelTimeoutMs;
+	if (patch.judgeTimeoutMs !== undefined) next.judgeTimeoutMs = patch.judgeTimeoutMs;
+	if (patch.verifyTimeoutMs !== undefined) next.verifyTimeoutMs = patch.verifyTimeoutMs;
+	if (patch.includeGitDiff !== undefined) next.includeGitDiff = patch.includeGitDiff;
+	if (patch.gitDiffCharLimit !== undefined) next.gitDiffCharLimit = patch.gitDiffCharLimit;
+	if (patch.tools) next.tools = patch.tools;
+	if (patch.verifyChecks) next.verifyChecks = patch.verifyChecks;
 	return next;
 }
 
-function parseCouncilsJson(value: string | undefined): Council[] | undefined {
-	const trimmed = value?.trim();
-	if (!trimmed) return [];
-	try {
-		return parseCouncilsValue(JSON.parse(trimmed));
-	} catch {
-		return undefined;
+function mergeNamed<T extends { name: string }>(base: T[], overrides: T[]): T[] {
+	const values = new Map(base.map((item) => [item.name, item]));
+	for (const item of overrides) values.set(item.name, item);
+	return [...values.values()];
+}
+
+function readEnvPatch(): ConfigPatch {
+	const patch: ConfigPatch = {};
+	if ("PI_SCRUTINY_PANEL" in process.env) {
+		const members = parseLegacyMembers(process.env.PI_SCRUTINY_PANEL ?? "", "PI_SCRUTINY_PANEL");
+		if (members.length) {
+			patch.panels = [{ name: LEGACY_DEFAULT_PANEL_NAME, members: stripLegacyLenses(members) }];
+			patch.defaultPanel = LEGACY_DEFAULT_PANEL_NAME;
+		} else {
+			patch.defaultPanel = undefined;
+		}
 	}
-}
-
-function parseCouncilsValue(value: unknown): Council[] | undefined {
-	if (!value) return undefined;
-	if (Array.isArray(value)) return value.map((item) => parseCouncil(item)).filter((item): item is Council => Boolean(item));
-	if (typeof value === "object") {
-		return Object.entries(value as Record<string, unknown>)
-			.map(([name, item]) => parseCouncil({ ...(item && typeof item === "object" ? (item as Record<string, unknown>) : {}), name }))
-			.filter((item): item is Council => Boolean(item));
+	if ("PI_SCRUTINY_DEFAULT_PANEL" in process.env) patch.defaultPanel = optionalString(process.env.PI_SCRUTINY_DEFAULT_PANEL, "PI_SCRUTINY_DEFAULT_PANEL");
+	if ("PI_SCRUTINY_JUDGE" in process.env) patch.judge = optionalString(process.env.PI_SCRUTINY_JUDGE, "PI_SCRUTINY_JUDGE");
+	if ("PI_SCRUTINY_MAX_PANEL_MODELS" in process.env) patch.maxPanelModels = requiredNumber(process.env.PI_SCRUTINY_MAX_PANEL_MODELS, "PI_SCRUTINY_MAX_PANEL_MODELS", 1, 8);
+	if ("PI_SCRUTINY_MAX_PANEL_OUTPUT_CHARS" in process.env) patch.maxPanelOutputChars = requiredNumber(process.env.PI_SCRUTINY_MAX_PANEL_OUTPUT_CHARS, "PI_SCRUTINY_MAX_PANEL_OUTPUT_CHARS", 2_000, 200_000);
+	if ("PI_SCRUTINY_MAX_JUDGE_OUTPUT_CHARS" in process.env) patch.maxJudgeOutputChars = requiredNumber(process.env.PI_SCRUTINY_MAX_JUDGE_OUTPUT_CHARS, "PI_SCRUTINY_MAX_JUDGE_OUTPUT_CHARS", 2_000, 200_000);
+	if ("PI_SCRUTINY_PANEL_TIMEOUT_MS" in process.env) patch.panelTimeoutMs = requiredNumber(process.env.PI_SCRUTINY_PANEL_TIMEOUT_MS, "PI_SCRUTINY_PANEL_TIMEOUT_MS", 5_000, 30 * 60_000);
+	if ("PI_SCRUTINY_JUDGE_TIMEOUT_MS" in process.env) patch.judgeTimeoutMs = requiredNumber(process.env.PI_SCRUTINY_JUDGE_TIMEOUT_MS, "PI_SCRUTINY_JUDGE_TIMEOUT_MS", 5_000, 30 * 60_000);
+	if ("PI_SCRUTINY_VERIFY_TIMEOUT_MS" in process.env) patch.verifyTimeoutMs = requiredNumber(process.env.PI_SCRUTINY_VERIFY_TIMEOUT_MS, "PI_SCRUTINY_VERIFY_TIMEOUT_MS", 5_000, 30 * 60_000);
+	if ("PI_SCRUTINY_INCLUDE_GIT_DIFF" in process.env) patch.includeGitDiff = requiredBoolean(process.env.PI_SCRUTINY_INCLUDE_GIT_DIFF, "PI_SCRUTINY_INCLUDE_GIT_DIFF");
+	if ("PI_SCRUTINY_GIT_DIFF_CHARS" in process.env) patch.gitDiffCharLimit = requiredNumber(process.env.PI_SCRUTINY_GIT_DIFF_CHARS, "PI_SCRUTINY_GIT_DIFF_CHARS", 0, 200_000);
+	if ("PI_SCRUTINY_TOOLS" in process.env) patch.tools = parseCsv(process.env.PI_SCRUTINY_TOOLS);
+	if ("PI_SCRUTINY_VERIFY_CHECKS" in process.env) patch.verifyChecks = parseEnvJson(process.env.PI_SCRUTINY_VERIFY_CHECKS, "PI_SCRUTINY_VERIFY_CHECKS", (value) => parseVerifyChecksValue(value, "PI_SCRUTINY_VERIFY_CHECKS"));
+	if ("PI_SCRUTINY_TEMPLATES" in process.env) patch.templates = parseEnvJson(process.env.PI_SCRUTINY_TEMPLATES, "PI_SCRUTINY_TEMPLATES", (value) => parseNamedTemplates(value, "PI_SCRUTINY_TEMPLATES"));
+	if ("PI_SCRUTINY_PANELS" in process.env || "PI_SCRUTINY_COUNCILS" in process.env) {
+		const raw = process.env.PI_SCRUTINY_PANELS ?? process.env.PI_SCRUTINY_COUNCILS;
+		const legacy = parseEnvJson(raw, "PI_SCRUTINY_PANELS", (value) => parseLegacyConfig({ panels: value }, "PI_SCRUTINY_PANELS"));
+		patch.panels = legacy.panels;
+		patch.templates = legacy.templates;
+		patch.diagnostics = legacy.diagnostics;
 	}
-	return undefined;
+	return patch;
 }
 
-function parseCouncil(value: unknown): Council | undefined {
-	if (!value || typeof value !== "object") return undefined;
-	const input = value as Record<string, unknown>;
-	const name = parseString(input.name);
-	const surface = parseSurface(input.surface) ?? "consult";
-	if (!name) return undefined;
-	const thinking = parseThinkingLevel(input.thinking);
-	const panelists = parsePanelMembers(input.members ?? input.panelists ?? input.panel)
-		?.map((member) => ({ ...member, thinking: member.thinking ?? thinking })) ?? [];
-	const judge = parseString(input.judge);
-	const judgeMode = parseJudgeMode(input.judgeMode ?? input.judgePolicy);
-	const includeGitDiff = parseBoolValue(input.includeGitDiff);
-	const verify = parseVerifyPolicy(input.verify ?? input.verifyPolicy);
-	return { name, surface, panelists, thinking, judge, judgeMode, includeGitDiff, verify };
+function parseNamedPanels(value: unknown, at: string): PanelDefinition[] {
+	if (!isRecord(value)) throw new ConfigurationError(`${at} must be an object keyed by panel name`);
+	return Object.entries(value).map(([name, panel]) => parsePanelDefinition(requiredName(name, at), panel, `${at}.${name}`));
 }
 
-function parsePanelMembers(value: unknown): PanelMember[] | undefined {
+function parseNamedTemplates(value: unknown, at: string): ScrutinyConfig["templates"] {
+	if (!isRecord(value)) throw new ConfigurationError(`${at} must be an object keyed by template name`);
+	return Object.entries(value).map(([name, template]) => {
+		const parsedName = requiredName(name, at);
+		if (isBuiltinTemplateName(parsedName)) throw new ConfigurationError(`${at}.${parsedName} is reserved for a built-in template`);
+		return parseTemplateDefinition(parsedName, template, `${at}.${parsedName}`);
+	});
+}
+
+function parseLegacyBundledPanels(value: unknown, at: string): Array<{
+	name: string;
+	surface: ScrutinyConfig["templates"][number]["surface"];
+	members: LegacyPanelMember[];
+	judgeMode?: JudgeMode;
+	includeGitDiff?: boolean;
+	verify?: boolean;
+}> {
+	const entries: Array<readonly [string, Record<string, unknown>]> = Array.isArray(value)
+		? value.map((entry, index) => {
+			if (!isRecord(entry)) throw new ConfigurationError(`${at}[${index}] must be an object`);
+			return [requiredString(entry.name, `${at}[${index}].name`), entry] as const;
+		})
+		: isRecord(value) ? Object.entries(value).map(([name, entry]) => {
+			if (!isRecord(entry)) throw new ConfigurationError(`${at}.${name} must be an object`);
+			return [name, entry] as const;
+		}) : (() => { throw new ConfigurationError(`${at} must be an array or object`); })();
+	const seen = new Set<string>();
+	return entries.map(([name, entry]) => {
+		const parsedName = requiredName(name, at);
+		if (seen.has(parsedName)) throw new ConfigurationError(`${at}: duplicate saved panel "${parsedName}"`);
+		seen.add(parsedName);
+		const surface = optionalSurface(entry.surface, `${at}.${parsedName}.surface`) ?? "consult";
+		const sharedThinking = optionalThinkingLevel(entry.thinking, `${at}.${parsedName}.thinking`);
+		const members = parseLegacyMembers(entry.members ?? entry.panelists ?? entry.panel, `${at}.${parsedName}.members`)
+			.map((member) => ({ ...member, thinking: member.thinking ?? sharedThinking }));
+		if (surface !== "verify" && members.length === 0) throw new ConfigurationError(`${at}.${parsedName}.members must contain at least one member`);
+		return {
+			name: parsedName,
+			surface,
+			members,
+			judgeMode: optionalJudgeMode(entry.judgeMode ?? entry.judgePolicy, `${at}.${parsedName}.judgeMode`),
+			includeGitDiff: optionalBoolean(entry.includeGitDiff, `${at}.${parsedName}.includeGitDiff`),
+			verify: optionalVerifyPolicy(entry.verify ?? entry.verifyPolicy, `${at}.${parsedName}.verify`),
+		};
+	});
+}
+
+function parseLegacyMembers(value: unknown, at: string): LegacyPanelMember[] {
 	if (typeof value === "string") return parseCsv(value).map((model) => ({ model }));
-	if (!Array.isArray(value)) return undefined;
-	const members = value
-		.map((item) => {
-			if (typeof item === "string") return { model: item.trim() };
-			if (!item || typeof item !== "object") return undefined;
-			const input = item as Record<string, unknown>;
-			const model = parseString(input.model);
-			if (!model) return undefined;
-			const member: PanelMember = { model };
-			const lens = parseString(input.lens);
-			const thinking = parseThinkingLevel(input.thinking);
-			if (lens) member.lens = lens;
-			if (thinking) member.thinking = thinking;
-			return member;
-		})
-		.filter((item): item is PanelMember => Boolean(item));
-	return members.length ? members : undefined;
+	if (!Array.isArray(value)) throw new ConfigurationError(`${at} must be a comma-separated model list or member array`);
+	return value.map((member, index) => {
+		if (typeof member === "string") return { model: requiredString(member, `${at}[${index}]`) };
+		if (!isRecord(member)) throw new ConfigurationError(`${at}[${index}] must be a model string or object`);
+		const model = requiredString(member.model, `${at}[${index}].model`);
+		const lens = optionalString(member.lens, `${at}[${index}].lens`);
+		const thinking = optionalThinkingLevel(member.thinking, `${at}[${index}].thinking`);
+		return { model, ...(lens === undefined ? {} : { lens }), ...(thinking === undefined ? {} : { thinking }) };
+	});
 }
 
-function parseVerifyChecksJson(value: string | undefined): VerifyCheckSpec[] | undefined {
-	const trimmed = value?.trim();
-	if (!trimmed) return undefined;
+function stripLegacyLenses(members: LegacyPanelMember[]): PanelMember[] {
+	return members.map(({ model, thinking }) => ({ model, ...(thinking === undefined ? {} : { thinking }) }));
+}
+
+function parseVerifyChecksValue(value: unknown, at: string): VerifyCheckSpec[] {
+	if (!Array.isArray(value)) throw new ConfigurationError(`${at} must be an array`);
+	return value.map((item, index) => {
+		if (!isRecord(item)) throw new ConfigurationError(`${at}[${index}] must be an object`);
+		const name = requiredString(item.name, `${at}[${index}].name`);
+		const command = requiredString(item.command, `${at}[${index}].command`);
+		const args = item.args === undefined ? undefined : requiredStringList(item.args, `${at}[${index}].args`);
+		const timeoutMs = item.timeoutMs === undefined ? undefined : requiredNumber(item.timeoutMs, `${at}[${index}].timeoutMs`, 1_000, 30 * 60_000);
+		return { name, command, ...(args === undefined ? {} : { args }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
+	});
+}
+
+function parseEnvJson<T>(raw: string | undefined, at: string, parse: (value: unknown) => T): T {
+	if (!raw?.trim()) throw new ConfigurationError(`${at} must contain JSON`);
 	try {
-		return parseVerifyChecksValue(JSON.parse(trimmed));
-	} catch {
-		return undefined;
+		return parse(JSON.parse(raw));
+	} catch (error) {
+		if (error instanceof ConfigurationError) throw error;
+		throw new ConfigurationError(`${at} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
 	}
-}
-
-function parseVerifyChecksValue(value: unknown): VerifyCheckSpec[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const checks = value
-		.map((item) => {
-			if (!item || typeof item !== "object") return undefined;
-			const input = item as Record<string, unknown>;
-			const name = parseString(input.name);
-			const command = parseString(input.command);
-			if (!name || !command) return undefined;
-			const args = parseStringList(input.args);
-			const timeoutMs = parseNumber(input.timeoutMs, 1_000, 30 * 60_000);
-			const check: VerifyCheckSpec = { name, command };
-			if (args) check.args = args;
-			if (timeoutMs !== undefined) check.timeoutMs = timeoutMs;
-			return check;
-		})
-		.filter((item): item is VerifyCheckSpec => Boolean(item));
-	return checks.length ? checks : undefined;
 }
 
 function parseCsv(value: string | undefined): string[] {
-	return (value ?? "")
-		.split(",")
-		.map((part) => part.trim())
-		.filter(Boolean);
+	return (value ?? "").split(",").map((part) => part.trim()).filter(Boolean);
 }
 
-function parseStringList(value: unknown): string[] | undefined {
+function requiredStringList(value: unknown, at: string): string[] {
 	if (typeof value === "string") return parseCsv(value);
-	if (!Array.isArray(value)) return undefined;
-	return value.map(String).map((part) => part.trim()).filter(Boolean);
+	if (!Array.isArray(value)) throw new ConfigurationError(`${at} must be a string or array of strings`);
+	return value.map((item, index) => requiredString(item, `${at}[${index}]`));
 }
 
-function parseString(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	const trimmed = value.trim();
-	return trimmed ? trimmed : undefined;
+function requiredName(value: string, at: string): string {
+	const name = value.trim();
+	if (!name) throw new ConfigurationError(`${at} has an empty name`);
+	return name;
 }
 
-function emptyToUndefined(value: string | undefined): string | undefined {
-	const trimmed = value?.trim();
-	return trimmed ? trimmed : undefined;
+function requiredString(value: unknown, at: string): string {
+	const parsed = optionalString(value, at);
+	if (!parsed) throw new ConfigurationError(`${at} must be a non-empty string`);
+	return parsed;
 }
 
-function parseBoolValue(value: unknown): boolean | undefined {
+function optionalString(value: unknown, at: string): string | undefined {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (typeof value !== "string" || !value.trim()) throw new ConfigurationError(`${at} must be a non-empty string`);
+	return value.trim();
+}
+
+function requiredBoolean(value: unknown, at: string): boolean {
+	const parsed = optionalBoolean(value, at);
+	if (parsed === undefined) throw new ConfigurationError(`${at} must be a boolean`);
+	return parsed;
+}
+
+function optionalBoolean(value: unknown, at: string): boolean | undefined {
+	if (value === undefined) return undefined;
 	if (typeof value === "boolean") return value;
-	if (typeof value !== "string") return undefined;
-	const normalized = value.trim().toLowerCase();
-	if (["1", "true", "yes", "on"].includes(normalized)) return true;
-	if (["0", "false", "no", "off"].includes(normalized)) return false;
-	return undefined;
+	if (typeof value === "string") {
+		if (["1", "true", "yes", "on"].includes(value.trim().toLowerCase())) return true;
+		if (["0", "false", "no", "off"].includes(value.trim().toLowerCase())) return false;
+	}
+	throw new ConfigurationError(`${at} must be a boolean`);
 }
 
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-	return parseBoolValue(process.env[name]) ?? fallback;
+function optionalVerifyPolicy(value: unknown, at: string): boolean | undefined {
+	if (value === "on") return true;
+	if (value === "off") return false;
+	return optionalBoolean(value, at);
 }
 
-function parseNumber(value: unknown, min: number, max: number): number | undefined {
-	const n = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
-	if (!Number.isFinite(n)) return undefined;
-	return Math.max(min, Math.min(max, Math.floor(n)));
+function requiredNumber(value: unknown, at: string, min: number, max: number): number {
+	const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+	if (!Number.isFinite(number)) throw new ConfigurationError(`${at} must be a number`);
+	if (number < min || number > max) throw new ConfigurationError(`${at} must be between ${min} and ${max}`);
+	return Math.floor(number);
 }
 
-function parseIntEnv(name: string, fallback: number, min: number, max: number): number {
-	return parseNumber(process.env[name], min, max) ?? fallback;
+function optionalSurface(value: unknown, at: string): ScrutinyConfig["templates"][number]["surface"] | undefined {
+	const parsed = optionalString(value, at);
+	if (!parsed) return undefined;
+	if (parsed === "consult" || parsed === "hypotheses" || parsed === "criteria" || parsed === "repo-map" || parsed === "risks" || parsed === "verify") return parsed;
+	throw new ConfigurationError(`${at} must be a supported surface`);
 }
 
-function parseSurface(value: unknown): ScrutinySurface | undefined {
-	const surface = parseString(value) as ScrutinySurface | undefined;
-	return surface && SCRUTINY_SURFACES.includes(surface) ? surface : undefined;
+function optionalJudgeMode(value: unknown, at: string): JudgeMode | undefined {
+	if (value === undefined) return undefined;
+	if (value === "auto" || value === "off" || value === "on") return value;
+	throw new ConfigurationError(`${at} must be "auto", "off", or "on"`);
 }
 
-function parseJudgeMode(value: unknown): Council["judgeMode"] | undefined {
-	const mode = parseString(value);
-	if (mode === "auto" || mode === "off" || mode === "on") return mode;
-	return undefined;
+function optionalThinkingLevel(value: unknown, at: string): ThinkingLevel | undefined {
+	if (value === undefined) return undefined;
+	if (value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh") return value;
+	throw new ConfigurationError(`${at} must be a supported thinking level`);
 }
 
-function parseThinkingLevel(value: unknown): ThinkingLevel | undefined {
-	const level = parseString(value);
-	if (level === "off" || level === "minimal" || level === "low" || level === "medium" || level === "high" || level === "xhigh") return level;
-	return undefined;
-}
-
-function parseVerifyPolicy(value: unknown): boolean | undefined {
-	const bool = parseBoolValue(value);
-	if (bool !== undefined) return bool;
-	const policy = parseString(value);
-	if (policy === "on") return true;
-	if (policy === "off") return false;
-	return undefined;
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

@@ -1,7 +1,8 @@
 import type { SurfaceArtifact, SurfaceFacts } from "./normalize.js";
 
 export type ScrutinySurface = "consult" | "hypotheses" | "criteria" | "repo-map" | "risks" | "verify";
-export type PanelMode = "replicate" | "roles";
+export type DeliberationStrategy = "replicate" | "roles";
+export type JudgeMode = "auto" | "off" | "on";
 export type ScrutinyStatus = "pending" | "running" | "ready" | "failed";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -79,7 +80,11 @@ export type ScrutinyAnalysis = {
 export type ScrutinyRunProgress = {
 	runId: string;
 	surface: ScrutinySurface;
-	panel_mode?: PanelMode;
+	template?: string;
+	panelName?: string;
+	strategy?: DeliberationStrategy;
+	assignments?: ResolvedPanelAssignment[];
+	unassignedLenses?: string[];
 	packetPath?: string;
 	panel: PanelSpec[];
 	judge?: PanelSpec;
@@ -92,9 +97,13 @@ export type ScrutinyRunProgress = {
 export type ScrutinyRunResult = {
 	runId: string;
 	surface: ScrutinySurface;
-	panel_mode?: PanelMode;
+	template?: string;
+	panelName?: string;
+	strategy?: DeliberationStrategy;
+	assignments?: ResolvedPanelAssignment[];
+	unassignedLenses?: string[];
 	status: "ok" | "error";
-	failure_reason?: "missing_panel" | "all_panels_failed" | "judge_failed" | "recursion_capped" | "unexpected_error";
+	failure_reason?: "invalid_configuration" | "missing_panel" | "all_panels_failed" | "judge_failed" | "recursion_capped" | "unexpected_error";
 	error?: string;
 	packetPath?: string;
 	packet: string;
@@ -113,6 +122,11 @@ export type ScrutinyRunResult = {
 export type ScrutinySummary = {
 	runId: string;
 	surface: ScrutinySurface;
+	template?: string;
+	panelName?: string;
+	strategy?: DeliberationStrategy;
+	assignments?: ResolvedPanelAssignment[];
+	unassignedLenses?: string[];
 	startedAt: number;
 	endedAt: number;
 	prompt: string;
@@ -163,7 +177,10 @@ export type ScrutinyConfigSource = {
 };
 
 export type ScrutinyConfig = {
-	panel: PanelMember[];
+	schemaVersion: 2;
+	defaultPanel?: string;
+	panels: PanelDefinition[];
+	templates: ScrutinyTemplate[];
 	judge?: string;
 	maxPanelModels: number;
 	maxPanelOutputChars: number;
@@ -175,8 +192,9 @@ export type ScrutinyConfig = {
 	gitDiffCharLimit: number;
 	tools: string[];
 	verifyChecks: VerifyCheckSpec[];
-	councils: Council[];
 	configSources: ScrutinyConfigSource[];
+	diagnostics: string[];
+	configurationErrors: string[];
 };
 
 export type VerifyCheckSpec = {
@@ -188,32 +206,75 @@ export type VerifyCheckSpec = {
 
 export type PanelMember = {
 	model: string;
-	lens?: string;
 	thinking?: ThinkingLevel;
 };
 
-export type CouncilPanelist = PanelMember;
-
-export type Council = {
+export type PanelDefinition = {
 	name: string;
-	surface: ScrutinySurface;
-	panelists: PanelMember[];
-	thinking?: ThinkingLevel;
-	judge?: string;
-	judgeMode?: "auto" | "off" | "on";
+	members: PanelMember[];
+};
+
+export type DeliberationTemplate = {
+	surface: Exclude<ScrutinySurface, "verify">;
+	name: string;
+	strategy: DeliberationStrategy;
+	lenses?: string[];
+	panel?: string;
+	judgeMode?: JudgeMode;
 	includeGitDiff?: boolean;
 	verify?: boolean;
 };
 
+export type VerifyTemplate = {
+	name: string;
+	surface: "verify";
+	includeGitDiff?: boolean;
+	verify?: boolean;
+};
+
+export type ScrutinyTemplate = DeliberationTemplate | VerifyTemplate;
+
+export type ResolvedPanelAssignment = {
+	model: string;
+	thinking?: ThinkingLevel;
+	lens?: string;
+};
+
+export type ResolvedRunPolicies = {
+	includeGitDiff: boolean;
+	judgeMode: JudgeMode;
+	verify: boolean;
+};
+
+export type ResolvedDeliberationRunPlan = {
+	readonly template: DeliberationTemplate;
+	readonly panel: PanelDefinition;
+	readonly strategy: DeliberationStrategy;
+	readonly assignments: readonly ResolvedPanelAssignment[];
+	readonly unassignedLenses: readonly string[];
+	readonly policies: Readonly<ResolvedRunPolicies>;
+};
+
+export type ResolvedVerifyRunPlan = {
+	readonly template: VerifyTemplate;
+	readonly panel: undefined;
+	readonly strategy: undefined;
+	readonly assignments: readonly [];
+	readonly unassignedLenses: readonly [];
+	readonly policies: Readonly<ResolvedRunPolicies>;
+};
+
+export type ResolvedRunPlan = ResolvedDeliberationRunPlan | ResolvedVerifyRunPlan;
+
 export type ScrutinyParams = {
 	prompt: string;
 	context?: string;
+	template?: string;
+	panel?: string;
+	/** @deprecated Callers should select a named template. */
 	surface?: ScrutinySurface;
-	panel?: string[];
-	panelMembers?: PanelMember[];
 	judge?: string;
-	judgeMode?: "auto" | "off" | "on";
-	maxPanelModels?: number;
+	judgeMode?: JudgeMode;
 	includeGitDiff?: boolean;
 	tools?: string[];
 	verify?: boolean;

@@ -28,6 +28,11 @@ async function writeSurfaceArtifact(input: { runDir: string; result: ScrutinyRun
 		failure_reason: input.result.failure_reason,
 		error: input.result.error,
 		packetPath: input.result.packetPath,
+		template: input.result.template,
+		panelName: input.result.panelName,
+		strategy: input.result.strategy,
+		assignments: input.result.assignments,
+		unassignedLenses: input.result.unassignedLenses,
 		analysis: input.result.analysis,
 		normalized: input.result.normalized,
 		panel: input.result.responses.map((response) => ({
@@ -81,6 +86,11 @@ async function buildRunSummary(input: { cwd: string; runDir: string; result: Scr
 	return {
 		runId: result.runId,
 		surface: result.surface,
+		template: result.template,
+		panelName: result.panelName,
+		strategy: result.strategy,
+		assignments: result.assignments,
+		unassignedLenses: result.unassignedLenses,
 		startedAt: result.startedAt,
 		endedAt: result.endedAt,
 		prompt,
@@ -120,7 +130,7 @@ function analysisToText(result: ScrutinyRunResult): string {
 		...(analysis.coverage ?? []),
 		...(analysis.blind_spots ?? []),
 		...(analysis.unique_insights ?? []).map((item) => item.insight),
-		...(result.panel_mode === "roles" ? [] : (analysis.contradictions ?? []).flatMap((item) => [item.topic, ...item.stances.map((stance) => stance.stance)])),
+		...(resultStrategy(result) === "roles" ? [] : (analysis.contradictions ?? []).flatMap((item) => [item.topic, ...item.stances.map((stance) => stance.stance)])),
 	].join("\n");
 }
 
@@ -133,7 +143,7 @@ function extractSignals(result: ScrutinyRunResult): string[] {
 }
 
 function extractContradictions(result: ScrutinyRunResult): string[] {
-	if (result.panel_mode === "roles") return [];
+	if (resultStrategy(result) === "roles") return [];
 	return (result.analysis?.contradictions ?? []).map((item) => {
 		const stances = item.stances.map((stance) => `${stance.model}: ${stance.stance}`).join(" | ");
 		return truncate(`${item.topic}${stances ? ` — ${stances}` : ""}`, 400);
@@ -235,6 +245,12 @@ function unique(items: string[]): string[] {
 
 function limit<T>(items: T[], count: number): T[] {
 	return items.slice(0, count);
+}
+
+/** Compatibility edge for summaries rebuilt from v1 result artifacts. */
+function resultStrategy(result: ScrutinyRunResult): ScrutinyRunResult["strategy"] {
+	if (result.strategy) return result.strategy;
+	return (result as ScrutinyRunResult & { panel_mode?: ScrutinyRunResult["strategy"] }).panel_mode;
 }
 
 const STOP = new Set([

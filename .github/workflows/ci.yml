@@ -29,6 +29,9 @@ jobs:
       - name: Typecheck
         run: npm run check
 
+      - name: Template configuration eval
+        run: npm run eval:templates
+
       - name: Control-boundary eval
         run: npm run eval:boundaries
 

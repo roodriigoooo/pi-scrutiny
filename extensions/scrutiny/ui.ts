@@ -1,23 +1,20 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
 import { surfaceFacts } from "./normalize.js";
-import type { ScrutinyRunProgress, ScrutinyRunResult, PanelResponse, SurfaceFacts } from "./types.js";
+import type { DeliberationStrategy, PanelResponse, ScrutinyAnalysis, ScrutinyRunProgress, ScrutinyRunResult, SurfaceFacts } from "./types.js";
 import { formatDuration, formatTokens, truncate } from "./util.js";
 
 export function scrutinyStatusText(details: unknown): string {
 	if (isResult(details)) {
 		const ok = details.responses.filter((response) => response.status === "ok").length;
 		const failed = details.failed_models.length;
-		const mode = details.panel_mode ? ` ${details.panel_mode}` : "";
-		const panel = details.responses.length ? ` ${ok}/${details.responses.length}` : "";
-		return `scrutiny ${details.status} ${details.surface}${mode} ${formatDuration(details.durationMs)}${panel}${failed ? ` ${failed} failed` : ""}`;
+		const strategy = strategyOf(details);
+		return `scrutiny ${details.status} ${details.surface}${strategy ? ` ${strategy}` : ""} ${formatDuration(details.durationMs)}${details.responses.length ? ` ${ok}/${details.responses.length}` : ""}${failed ? ` ${failed} failed` : ""}`;
 	}
 	if (isProgress(details)) {
 		const ready = details.panel.filter((item) => item.status === "ready").length;
 		const elapsed = formatDuration(Math.max(0, details.updatedAt - details.startedAt));
-		const mode = details.panel_mode ? ` ${details.panel_mode}` : "";
-		const panel = details.panel.length ? ` ${ready}/${details.panel.length}` : " verify";
-		return `scrutiny ${details.surface}${mode} ${elapsed}${panel} ${progressPhase(details)}`;
+		return `scrutiny ${details.surface}${details.strategy ? ` ${details.strategy}` : ""} ${elapsed}${details.panel.length ? ` ${ready}/${details.panel.length}` : " verify"} ${progressPhase(details)}`;
 	}
 	return "scrutiny";
 }
@@ -35,8 +32,7 @@ function renderStaticMessage(message: any, theme: any) {
 	const content = String(message.content ?? "scrutiny");
 	const kind = typeof message.details?.kind === "string" ? message.details.kind : inferStaticKind(content);
 	const box = new Box(1, 1, (s: string) => theme.bg("customMessageBg", s));
-	const chips = staticChips(kind).map((item) => chip(theme, item, item === "env override" ? "warning" : "muted"));
-	box.addChild(new Text(`${theme.fg("accent", "◆")} ${theme.bold("scrutiny")} ${theme.fg("dim", kind)} ${chips.join(" ")}`.trim(), 0, 0));
+	box.addChild(new Text(`${theme.fg("accent", "◆")} ${theme.bold("scrutiny")} ${theme.fg("dim", kind)} ${staticChips(kind).map((item) => chip(theme, item, item === "env override" ? "warning" : "muted")).join(" ")}`.trim(), 0, 0));
 	box.addChild(new Markdown(stripFirstHeading(content), 0, 0, getMarkdownTheme()));
 	return box;
 }
@@ -44,8 +40,7 @@ function renderStaticMessage(message: any, theme: any) {
 function inferStaticKind(content: string): string {
 	const first = content.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "message";
 	const match = first.match(/^#\s+scrutiny\s+(\S+)/i) ?? first.match(/^#\s+pi-scrutiny/i);
-	if (!match) return "message";
-	return match[1]?.toLowerCase() ?? "help";
+	return match?.[1]?.toLowerCase() ?? "help";
 }
 
 function stripFirstHeading(content: string): string {
@@ -53,21 +48,13 @@ function stripFirstHeading(content: string): string {
 }
 
 function staticChips(kind: string): string[] {
-	switch (kind) {
-		case "help":
-		case "pi-scrutiny":
-			return ["6 surfaces", "inline", "no patch fusion"];
-		case "models":
-			return ["panel", "verify", "env override"];
-		case "runs":
-			return ["session", "artifacts"];
-		case "councils":
-			return ["presets", "lenses"];
-		case "config":
-			return ["global", "project", "env override"];
-		default:
-			return [];
-	}
+	if (kind === "help" || kind === "pi-scrutiny") return ["6 surfaces", "templates", "no patch fusion"];
+	if (kind === "models") return ["panel", "verify", "env override"];
+	if (kind === "templates") return ["strategy", "policies"];
+	if (kind === "panels") return ["lineups only"];
+	if (kind === "runs") return ["session", "artifacts"];
+	if (kind === "config") return ["global", "project", "env override"];
+	return [];
 }
 
 function chip(theme: any, text: string, color: "accent" | "muted" | "success" | "warning" | "error"): string {
@@ -83,16 +70,15 @@ function progressPhase(progress: ScrutinyRunProgress): string {
 }
 
 export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any): string[] {
-	if (progresses.length === 0) return [];
+	if (!progresses.length) return [];
 	const lines = [`${theme.fg("accent", "◆")} ${theme.bold("scrutiny")} ${theme.fg("dim", "esc to cancel")}`];
 	for (const progress of progresses.slice(0, 1)) {
 		const ready = progress.panel.filter((item) => item.status === "ready").length;
 		const running = progress.panel.filter((item) => item.status === "running").length;
 		const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
-		const mode = progress.panel_mode ? ` ${progress.panel_mode}` : "";
 		const status = progress.panel.length ? `${ready}/${progress.panel.length}` : "verify";
 		const icon = running ? theme.fg("warning", "◐") : theme.fg("accent", "◆");
-		lines.push(`  ${icon} ${theme.fg("accent", progress.surface)}${theme.fg("dim", mode)} ${theme.fg("muted", elapsed)} ${theme.fg("dim", status)} ${theme.fg("muted", progressPhase(progress))}`);
+		lines.push(`  ${icon} ${theme.fg("accent", progress.surface)}${theme.fg("dim", progress.strategy ? ` ${progress.strategy}` : "")} ${theme.fg("muted", elapsed)} ${theme.fg("dim", status)} ${theme.fg("muted", progressPhase(progress))}`);
 		const current = progress.panel.find((item) => item.status === "running");
 		if (current) lines.push(`    ${theme.fg("warning", "→")} ${theme.fg("toolOutput", current.model)} ${theme.fg("dim", current.role)}`);
 	}
@@ -102,61 +88,43 @@ export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any
 function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
 	const ok = result.responses.filter((response) => response.status === "ok");
 	const failed = result.responses.filter((response) => response.status === "error");
+	const strategy = strategyOf(result);
 	const lines: string[] = [];
 	const color = result.status === "ok" ? "success" : "error";
-	const mode = result.panel_mode ? ` ${result.panel_mode}` : "";
-	lines.push(`${theme.fg(color, result.status === "ok" ? "◆" : "✕")} ${theme.bold("scrutiny")} ${theme.fg("accent", result.surface)}${theme.fg("dim", mode)} ${theme.fg("muted", formatDuration(result.durationMs))}`);
-	if (result.status === "error" && result.error) {
-		lines.push(`  ${theme.fg("error", truncate(result.error, 180).replace(/\n/g, " "))}`);
-	}
-	if (result.responses.length > 0) {
-		const judgeBit = result.judge ? ` ${result.judge.status === "ok" ? theme.fg("success", "map") : theme.fg("warning", "map:failed")}` : "";
-		lines.push(`  ${theme.fg("success", `${ok.length}/${result.responses.length} ready`)}${failed.length ? ` ${theme.fg("warning", `${failed.length} failed`)}` : ""}${judgeBit}`);
+	lines.push(`${theme.fg(color, result.status === "ok" ? "◆" : "✕")} ${theme.bold("scrutiny")} ${theme.fg("accent", result.surface)}${theme.fg("dim", strategy ? ` ${strategy}` : "")} ${theme.fg("muted", formatDuration(result.durationMs))}`);
+	if (result.template) lines.push(`  ${theme.fg("dim", `template:${result.template}${result.panelName ? ` · panel:${result.panelName}` : ""}`)}`);
+	if (result.status === "error" && result.error) lines.push(`  ${theme.fg("error", truncate(result.error, 180).replace(/\n/g, " "))}`);
+	if (result.responses.length) {
+		const judge = result.judge ? ` ${result.judge.status === "ok" ? theme.fg("success", "map") : theme.fg("warning", "map:failed")}` : "";
+		lines.push(`  ${theme.fg("success", `${ok.length}/${result.responses.length} ready`)}${failed.length ? ` ${theme.fg("warning", `${failed.length} failed`)}` : ""}${judge}`);
 	}
 	for (const response of result.responses) lines.push(panelLine(response, theme));
 	if (result.analysis?.disagreement_signal) lines.push(`  ${theme.fg("error", "⚠ disagreement")} ${theme.fg("dim", "stop signal")}`);
-	else if (result.panel_mode !== "roles" && result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 100).replace(/\n/g, " ")}`);
+	else if (strategy === "replicate" && result.analysis?.contradictions?.length) lines.push(`  ${theme.fg("warning", "contradiction")} ${truncate(result.analysis.contradictions[0]?.topic ?? "", 100).replace(/\n/g, " ")}`);
 	else if (result.analysis?.coverage?.length) lines.push(`  ${theme.fg("accent", "coverage")} ${truncate(result.analysis.coverage[0] ?? "", 100).replace(/\n/g, " ")}`);
-	else if (result.analysis?.consensus?.length) lines.push(`  ${theme.fg("accent", "shared")} ${truncate(result.analysis.consensus[0] ?? "", 100).replace(/\n/g, " ")}`);
-	const factLine = surfaceFactLine(result.normalized ? surfaceFacts(result.normalized) : undefined, theme);
-	if (factLine) lines.push(factLine);
+	const facts = result.normalized ? surfaceFacts(result.normalized) : undefined;
+	if (facts) lines.push(surfaceFactLine(facts, theme));
 	if (result.verify) lines.push(`  ${theme.fg(result.verify.failed ? "error" : "success", "verify")} ${result.verify.passed} pass ${result.verify.failed} fail ${result.verify.skipped} skip`);
 	if (result.packetPath) lines.push(`  ${theme.fg("dim", "ctrl+o expand")}`);
 	return lines.join("\n");
 }
 
-function artifactPath(packetPath: string, file: string): string {
-	return packetPath.replace(/packet\.md$/, file);
-}
-
-function surfaceFactLine(facts: SurfaceFacts | undefined, theme: any): string | undefined {
-	if (!facts) return undefined;
-	if (facts.rootCauses?.length) return `  ${theme.fg("accent", "root cause")} ${truncate(facts.rootCauses[0] ?? "", 100).replace(/\n/g, " ")}`;
-	if (facts.findings?.length) return `  ${theme.fg("warning", "risk")} ${truncate(facts.findings[0] ?? "", 100).replace(/\n/g, " ")}`;
-	if (facts.symbols?.length) return `  ${theme.fg("accent", "symbols")} ${facts.symbols.slice(0, 3).join(", ")}`;
-	if (facts.criteria?.length) return `  ${theme.fg("accent", "criterion")} ${truncate(facts.criteria[0] ?? "", 100).replace(/\n/g, " ")}`;
-	if (facts.recommendation) return `  ${theme.fg("accent", "rec")} ${truncate(facts.recommendation, 100).replace(/\n/g, " ")}`;
-	if (facts.positions?.length) return `  ${theme.fg("accent", "position")} ${truncate(facts.positions[0] ?? "", 100).replace(/\n/g, " ")}`;
-	return undefined;
-}
-
 function panelLine(response: PanelResponse, theme: any): string {
-	const dur = formatDuration(response.durationMs);
 	const usage = response.usage.input || response.usage.output ? ` ${formatTokens(response.usage.input)}↑ ${formatTokens(response.usage.output)}↓` : "";
 	const cost = response.usage.cost ? ` $${response.usage.cost.toFixed(4)}` : "";
-	return `  ${response.status === "ok" ? theme.fg("success", "●") : theme.fg("error", "×")} ${theme.fg("toolOutput", response.model)} ${theme.fg("dim", response.role)} ${theme.fg("muted", dur)}${theme.fg("dim", usage)}${theme.fg("dim", cost)}`;
+	return `  ${response.status === "ok" ? theme.fg("success", "●") : theme.fg("error", "×")} ${theme.fg("toolOutput", response.model)} ${theme.fg("dim", response.role)} ${theme.fg("muted", formatDuration(response.durationMs))}${theme.fg("dim", usage)}${theme.fg("dim", cost)}`;
 }
 
 function renderExpandedMarkdown(result: ScrutinyRunResult): string {
-	const lines: string[] = [];
-	lines.push(`# Scrutiny ${result.status}`);
-	lines.push(`surface: ${result.surface}  `);
-	if (result.panel_mode) lines.push(`panel mode: ${result.panel_mode}  `);
+	const strategy = strategyOf(result);
+	const lines = [`# Scrutiny ${result.status}`, `surface: ${result.surface}  `];
+	if (result.template) lines.push(`template: ${result.template}  `);
+	if (result.panelName) lines.push(`panel: ${result.panelName}  `);
+	if (strategy) lines.push(`strategy: ${strategy}  `);
+	if (result.assignments?.length) lines.push(`assignments: ${result.assignments.map((item) => `${item.model}${item.lens ? ` → ${item.lens}` : ""}`).join(", ")}  `);
+	if (result.unassignedLenses?.length) lines.push(`unassigned lenses: ${result.unassignedLenses.join(", ")}  `);
 	lines.push(`duration: ${formatDuration(result.durationMs)}  `);
-	if (result.packetPath) {
-		lines.push(`result: \`${artifactPath(result.packetPath, "result.json")}\``);
-		lines.push(`packet: \`${result.packetPath}\``);
-	}
+	if (result.packetPath) lines.push(`result: \`${result.packetPath.replace(/packet\.md$/, "result.json")}\``, `packet: \`${result.packetPath}\``);
 	lines.push("");
 	if (result.analysis) {
 		lines.push("## Evidence map");
@@ -164,93 +132,55 @@ function renderExpandedMarkdown(result: ScrutinyRunResult): string {
 		pushList(lines, "Risks", result.analysis.risks);
 		pushList(lines, "Coverage", result.analysis.coverage);
 		pushList(lines, "Blind spots", result.analysis.blind_spots);
-		if (result.analysis.unique_insights?.length) {
-			lines.push("### Unique insights");
-			for (const item of result.analysis.unique_insights) lines.push(`- **${item.model}**: ${item.insight}`);
-		}
-		if (result.panel_mode !== "roles" && result.analysis.contradictions?.length) {
-			lines.push("### Contradictions");
-			for (const item of result.analysis.contradictions) {
-				lines.push(`- ${item.topic}`);
-				for (const stance of item.stances) lines.push(`  - **${stance.model}**: ${stance.stance}`);
-			}
-		}
+		if (strategy === "replicate") pushContradictions(lines, result.analysis.contradictions);
 		if (result.analysis.confidence) lines.push(`confidence: ${result.analysis.confidence}`);
-		lines.push("");
-	}
-	const stats = contextStats(result);
-	if (stats.hasContext) {
-		lines.push("## Context footprint");
-		lines.push(`scout candidates: ${stats.candidates}  `);
-		lines.push(`related memory: ${stats.memory}  `);
-		lines.push(`missing-context signals: ${stats.gaps}`);
 		lines.push("");
 	}
 	const facts = result.normalized ? surfaceFacts(result.normalized) : undefined;
 	if (facts) {
 		lines.push("## Surface facts");
 		if (facts.rootCauses?.length) pushList(lines, "Root causes", facts.rootCauses);
-		if (facts.distinguishingTests?.length) pushList(lines, "Distinguishing tests", facts.distinguishingTests);
 		if (facts.findings?.length) pushList(lines, "Findings", facts.findings);
-		if (facts.suggestedChecks?.length) pushList(lines, "Suggested checks", facts.suggestedChecks);
-		if (facts.symbols?.length) pushList(lines, "Symbols", facts.symbols);
-		if (facts.files?.length) pushList(lines, "Files", facts.files);
 		if (facts.criteria?.length) pushList(lines, "Criteria", facts.criteria);
-		if (facts.testCases?.length) pushList(lines, "Test cases", facts.testCases);
 		if (facts.positions?.length) pushList(lines, "Positions", facts.positions);
-		if (facts.recommendation) lines.push(`recommendation: ${facts.recommendation}`);
 		lines.push("");
 	}
 	lines.push("## Panel outputs");
 	for (const response of result.responses) {
-		lines.push(`### ${response.model} (${response.role})`);
-		if (response.status === "error") lines.push(`error: ${response.error ?? "unknown"}`);
-		else lines.push(response.content);
-		lines.push("");
+		lines.push(`### ${response.model} (${response.role})`, response.status === "error" ? `error: ${response.error ?? "unknown"}` : response.content, "");
 	}
-	if (result.judge) {
-		lines.push("## Trade-off explainer raw output");
-		lines.push(result.judge.status === "ok" ? result.judge.content : result.judge.error ?? "trade-off explainer failed");
-	}
-	if (result.verify) {
-		lines.push("## Verify (objective arbiter)");
-		lines.push(`${result.verify.passed} passed · ${result.verify.failed} failed · ${result.verify.skipped} skipped · ${formatDuration(result.verify.durationMs)}`);
-		if (result.verify.diffStat) lines.push("```", result.verify.diffStat.trim(), "```");
-		for (const check of result.verify.checks) {
-			const icon = check.status === "pass" ? "✓" : check.status === "fail" ? "✕" : check.status === "error" ? "!" : "–";
-			lines.push(`- ${icon} ${check.name} (${check.status})`);
-		}
-	}
+	if (result.judge) lines.push("## Trade-off explainer raw output", result.judge.status === "ok" ? result.judge.content : result.judge.error ?? "trade-off explainer failed");
+	if (result.verify) lines.push("## Verify (objective arbiter)", `${result.verify.passed} passed · ${result.verify.failed} failed · ${result.verify.skipped} skipped · ${formatDuration(result.verify.durationMs)}`);
 	return lines.join("\n");
 }
 
-function contextStats(result: ScrutinyRunResult): { hasContext: boolean; candidates: number; memory: number; gaps: number } {
-	const scout = result.scout;
-	const missing = missingContextSignals(result);
-	return {
-		hasContext: Boolean(scout) || missing > 0,
-		candidates: scout?.candidates.length ?? 0,
-		memory: scout?.priorCount ?? 0,
-		gaps: (scout?.gaps.length ?? 0) + missing,
-	};
-}
-
-function missingContextSignals(result: ScrutinyRunResult): number {
-	const lines = [
-		...(result.analysis?.blind_spots ?? []),
-		...result.responses.flatMap((response) => response.content.split(/\r?\n/)),
-	]
-		.map((line) => line.trim().replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, ""))
-		.filter((line) => line.length >= 20 && line.length <= 500)
-		.filter((line) => !/^Deterministic analysis does not infer/i.test(line))
-		.filter((line) => /\b(missing|not shown|not in (the )?packet|insufficient|unknown|cannot determine|can't determine|need(?:s)? to inspect|must inspect|would need|need more evidence|not enough evidence)\b/i.test(line));
-	return new Set(lines.map((line) => truncate(line, 240))).size;
+function surfaceFactLine(facts: SurfaceFacts, theme: any): string {
+	if (facts.rootCauses?.length) return `  ${theme.fg("accent", "root cause")} ${truncate(facts.rootCauses[0] ?? "", 100).replace(/\n/g, " ")}`;
+	if (facts.findings?.length) return `  ${theme.fg("warning", "risk")} ${truncate(facts.findings[0] ?? "", 100).replace(/\n/g, " ")}`;
+	if (facts.symbols?.length) return `  ${theme.fg("accent", "symbols")} ${facts.symbols.slice(0, 3).join(", ")}`;
+	if (facts.criteria?.length) return `  ${theme.fg("accent", "criterion")} ${truncate(facts.criteria[0] ?? "", 100).replace(/\n/g, " ")}`;
+	if (facts.recommendation) return `  ${theme.fg("accent", "rec")} ${truncate(facts.recommendation, 100).replace(/\n/g, " ")}`;
+	return "";
 }
 
 function pushList(lines: string[], title: string, items: string[] | undefined): void {
 	if (!items?.length) return;
-	lines.push(`### ${title}`);
-	for (const item of items) lines.push(`- ${item}`);
+	lines.push(`### ${title}`, ...items.map((item) => `- ${item}`));
+}
+
+function pushContradictions(lines: string[], items: ScrutinyAnalysis["contradictions"]): void {
+	if (!Array.isArray(items) || !items.length) return;
+	lines.push("### Contradictions");
+	for (const item of items) {
+		lines.push(`- ${item.topic}`);
+		for (const stance of item.stances) lines.push(`  - ${stance.model}: ${stance.stance}`);
+	}
+}
+
+/** Old result artifacts used panel_mode; all current runtime paths use strategy. */
+function strategyOf(result: ScrutinyRunResult): DeliberationStrategy | undefined {
+	if (result.strategy) return result.strategy;
+	return (result as ScrutinyRunResult & { panel_mode?: DeliberationStrategy }).panel_mode;
 }
 
 function isProgress(value: unknown): value is ScrutinyRunProgress {

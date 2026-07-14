@@ -34,7 +34,9 @@ type Exec = (command: string, args: string[], options?: { timeout?: number; sign
 
 function makeConfig(checks: Array<{ name: string; command: string; args?: string[]; timeoutMs?: number }>): ScrutinyConfig {
 	return {
-		panel: [],
+		schemaVersion: 2,
+		panels: [],
+		templates: [],
 		maxPanelModels: 4,
 		maxPanelOutputChars: 1000,
 		maxJudgeOutputChars: 1000,
@@ -45,8 +47,9 @@ function makeConfig(checks: Array<{ name: string; command: string; args?: string
 		gitDiffCharLimit: 1000,
 		tools: [],
 		verifyChecks: checks,
-		councils: [],
 		configSources: [],
+		diagnostics: [],
+		configurationErrors: [],
 	};
 }
 

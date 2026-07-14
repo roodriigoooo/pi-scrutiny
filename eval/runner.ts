@@ -110,7 +110,7 @@ function parseLatestResult(stdout: string): Parsed {
 	}
 	if (runId && runDir) return { status: "ok", runId, runDir };
 	if (sawResult) return { status: "error", error: lastError ?? "result message had no runId/runDir", runDir };
-	// message-only task (help/models/councils/runs): no run artifacts, not an error
+	// message-only task (help/models/templates/runs): no run artifacts, not an error
 	return { status: "skipped", error: lastError ?? "no scrutiny run in this task" };
 }
 

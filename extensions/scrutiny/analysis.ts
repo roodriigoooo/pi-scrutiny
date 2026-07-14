@@ -1,9 +1,10 @@
-import type { PanelMode, ScrutinyAnalysis, PanelResponse, VerifyReport, ScrutinySurface } from "./types.js";
-import { SCRUTINY_STOP_STATEMENT, SURFACE_NEXT_STEP_LINES, panelModeBriefLine } from "./surfaces.js";
+import type { DeliberationStrategy, PanelResponse, ScrutinyAnalysis, ScrutinySurface, VerifyReport } from "./types.js";
+import { SCRUTINY_STOP_STATEMENT, SURFACE_NEXT_STEP_LINES } from "./surfaces.js";
+import { strategyPlainLanguage } from "./templates.js";
 import { truncate } from "./util.js";
 
 export function formatFailureBrief(input: {
-	surface: import("./types.js").ScrutinySurface;
+	surface: ScrutinySurface;
 	runId: string;
 	runDir: string;
 	responses: PanelResponse[];
@@ -17,7 +18,7 @@ export function formatFailureBrief(input: {
 	lines.push(`artifacts: ${input.runDir}`);
 	lines.push("");
 	lines.push("The panel failed; no usable panel evidence is available.");
-	lines.push("Review the reason and failed models below. If you want another run, fix configuration (PI_SCRUTINY_PANEL, keys, network) and invoke /scrutiny again.");
+	lines.push("Review the reason and failed models below. If you want another run, fix configuration (panels/templates, keys, network) and invoke /scrutiny again.");
 	lines.push("");
 	if (input.failedModels.length > 0) {
 		lines.push("## Failed panelists");
@@ -30,7 +31,7 @@ export function formatFailureBrief(input: {
 export function detectMush(responses: PanelResponse[]): string | undefined {
 	if (responses.length === 0) return undefined;
 	const ok = responses.filter((response) => response.status === "ok" && response.content.trim());
-	if (ok.length === 0) return undefined; // all-failed handled separately
+	if (ok.length === 0) return undefined;
 	const allTiny = ok.every((response) => response.content.trim().length < 80);
 	if (allTiny) return "all ok responses are near-empty (< 80 chars)";
 	const allHeadersOnly = ok.every((response) => {
@@ -43,16 +44,13 @@ export function detectMush(responses: PanelResponse[]): string | undefined {
 	return undefined;
 }
 
-function isToolIntentPreamble(text: string): boolean {
-	const compact = text.trim().replace(/\s+/g, " ");
-	if (compact.length > 600) return false;
-	return /\b(i'?ll|i will|let me|need to|first,? i|i should)\b.{0,120}\b(inspect|read|open|check|look at|call|use|run|grep)\b.{0,120}\b(repo|files?|tools?|commands?|bash|grep|read|tests?)\b/i.test(compact)
-		|| /\bcalling\b.{0,80}\b(repo reads|tools?|read|grep|bash)\b/i.test(compact)
-		|| /\b(can'?t|cannot|don'?t)\b.{0,80}\b(access|inspect|read)\b.{0,80}\b(repo|files?)\b/i.test(compact);
-}
-
-export function buildDeterministicAnalysis(responses: PanelResponse[], panelMode: PanelMode | undefined = "replicate"): ScrutinyAnalysis {
-	const mode = panelMode ?? "replicate";
+export function buildDeterministicAnalysis(input: {
+	responses: PanelResponse[];
+	strategy: DeliberationStrategy;
+	declaredLenses?: readonly string[];
+	unassignedLenses?: readonly string[];
+}): ScrutinyAnalysis {
+	const { responses, strategy } = input;
 	const ok = responses.filter((response) => response.status === "ok" && response.content.trim());
 	const risks = unique(ok.flatMap((response) => extractRiskLines(response.content)).slice(0, 8));
 	const uniqueInsights = ok.flatMap((response) =>
@@ -61,20 +59,20 @@ export function buildDeterministicAnalysis(responses: PanelResponse[], panelMode
 			.slice(0, 3)
 			.map((insight) => ({ model: response.model, insight: truncate(insight, 280) })),
 	);
-	const sharedTerms = mode === "replicate" ? sharedKeywords(ok.map((response) => response.content)) : [];
-	const contradictions = mode === "replicate" ? detectContradictions(ok) ?? [] : [];
-	const coverage = mode === "roles" ? roleCoverage(responses) : undefined;
-	const consensus = mode === "replicate"
+	const sharedTerms = strategy === "replicate" ? sharedKeywords(ok.map((response) => response.content)) : [];
+	const contradictions = strategy === "replicate" ? detectContradictions(ok) ?? [] : [];
+	const coverage = strategy === "roles" ? roleCoverage(responses, input.declaredLenses ?? [], input.unassignedLenses ?? []) : undefined;
+	const consensus = strategy === "replicate"
 		? [
 			`${ok.length}/${responses.length} panelists returned usable output.`,
 			sharedTerms.length ? `Shared technical vocabulary: ${sharedTerms.join(", ")}.` : "No strong lexical consensus detected; compare panel stances before synthesizing.",
 		]
 		: [
-			`${ok.length}/${responses.length} role lenses returned usable output.`,
-			"Roles mode: coverage/gaps are signal; disagreement stop-signal disabled.",
+			`${ok.length}/${responses.length} assigned lenses returned usable output.`,
+			"Roles strategy: coverage/gaps are signal; disagreement stop-signal disabled.",
 		];
-	const blindSpots = mode === "roles"
-		? roleGaps(responses)
+	const blindSpots = strategy === "roles"
+		? roleGaps(responses, input.unassignedLenses ?? [])
 		: ["Deterministic analysis does not infer all semantic contradictions; review panel stances before choosing a follow-up."];
 	return {
 		consensus,
@@ -84,13 +82,13 @@ export function buildDeterministicAnalysis(responses: PanelResponse[], panelMode
 		coverage,
 		blind_spots: blindSpots,
 		confidence: ok.length >= 2 ? (contradictions.length ? "low" : "medium") : "low",
-		disagreement_signal: mode === "replicate" && contradictions.length > 0,
+		disagreement_signal: strategy === "replicate" && contradictions.length > 0,
 	};
 }
 
 export function formatScrutinyBrief(input: {
 	surface: ScrutinySurface;
-	panelMode?: PanelMode;
+	strategy: DeliberationStrategy;
 	analysis?: ScrutinyAnalysis;
 	responses: PanelResponse[];
 	failedModels: Array<{ model: string; error: string }>;
@@ -103,7 +101,7 @@ export function formatScrutinyBrief(input: {
 	const lines: string[] = [];
 	lines.push(`# Scrutiny ${input.surface} result`);
 	lines.push(input.budgetLine);
-	if (input.panelMode) lines.push(panelModeBriefLine(input.surface, input.panelMode));
+	lines.push(`[${input.strategy}] ${strategyPlainLanguage(input.strategy)}.`);
 	lines.push(input.judgeRan ? "evidence map: trade-off explainer ran" : "evidence map: deterministic only; review panel stances yourself");
 	if (input.verify) lines.push(verifyLine(input.verify));
 	lines.push("");
@@ -114,9 +112,9 @@ export function formatScrutinyBrief(input: {
 			lines.push("Panel disagrees on a load-bearing point. Treat this as a stop signal: choose more evidence, a narrower test, or stop. Do not smooth this into a synthesized answer.");
 			lines.push("");
 		}
-		lines.push(`## Evidence map`);
+		lines.push("## Evidence map");
 		pushList(lines, "Shared signals", input.analysis.consensus);
-		if (input.panelMode !== "roles") pushContradictions(lines, input.analysis.contradictions);
+		if (input.strategy === "replicate") pushContradictions(lines, input.analysis.contradictions);
 		pushUnique(lines, input.analysis.unique_insights);
 		pushList(lines, "Risks", input.analysis.risks);
 		pushList(lines, "Coverage", input.analysis.coverage);
@@ -126,7 +124,7 @@ export function formatScrutinyBrief(input: {
 	}
 
 	if (ok.length > 0) {
-		lines.push(`## Panel excerpts`);
+		lines.push("## Panel excerpts");
 		for (const response of ok) {
 			lines.push(`### ${response.model} (${response.role})`);
 			lines.push(truncate(response.content, input.llmPanelExcerptChars));
@@ -135,7 +133,7 @@ export function formatScrutinyBrief(input: {
 	}
 
 	if (input.failedModels.length > 0) {
-		lines.push(`## Failed panelists`);
+		lines.push("## Failed panelists");
 		for (const failed of input.failedModels) lines.push(`- ${failed.model}: ${truncate(failed.error, 240)}`);
 	}
 
@@ -151,26 +149,20 @@ export function formatScrutinyBrief(input: {
 
 export function formatVerifyBrief(input: { verify: VerifyReport; budgetLine: string }): string {
 	const lines: string[] = [];
-	lines.push(`# Scrutiny verify result`);
+	lines.push("# Scrutiny verify result");
 	lines.push(input.budgetLine);
 	lines.push("");
 	lines.push("Verify is the objective arbiter. No LLM judge involved.");
 	lines.push("");
 	lines.push(formatVerifyReport(input.verify));
 	lines.push("", SURFACE_NEXT_STEP_LINES.verify, SCRUTINY_STOP_STATEMENT);
-	return lines.join("\n").trim();
+	return lines.join("\n");
 }
 
 export function formatVerifyReport(verify: VerifyReport): string {
 	const lines: string[] = [];
 	lines.push(`${verify.passed} passed · ${verify.failed} failed · ${verify.skipped} skipped · ${formatMs(verify.durationMs)}`);
-	if (verify.diffStat) {
-		lines.push("");
-		lines.push("### diff stat");
-		lines.push("```");
-		lines.push(verify.diffStat.trim());
-		lines.push("```");
-	}
+	if (verify.diffStat) lines.push("", "### diff stat", "```", verify.diffStat.trim(), "```");
 	for (const check of verify.checks) {
 		const icon = check.status === "pass" ? "✓" : check.status === "fail" ? "✕" : check.status === "error" ? "!" : "–";
 		lines.push(`- ${icon} ${check.name} (${check.status}, ${formatMs(check.durationMs)})`);
@@ -179,19 +171,27 @@ export function formatVerifyReport(verify: VerifyReport): string {
 	return lines.join("\n");
 }
 
+function isToolIntentPreamble(text: string): boolean {
+	const compact = text.trim().replace(/\s+/g, " ");
+	if (compact.length > 600) return false;
+	return /\b(i'?ll|i will|let me|need to|first,? i|i should)\b.{0,120}\b(inspect|read|open|check|look at|call|use|run|grep)\b.{0,120}\b(repo|files?|tools?|commands?|bash|grep|read|tests?)\b/i.test(compact)
+		|| /\bcalling\b.{0,80}\b(repo reads|tools?|read|grep|bash)\b/i.test(compact)
+		|| /\b(can'?t|cannot|don'?t)\b.{0,80}\b(access|inspect|read)\b.{0,80}\b(repo|files?)\b/i.test(compact);
+}
+
 function verifyLine(verify: VerifyReport): string {
 	return `verify: ${verify.passed} pass · ${verify.failed} fail · ${verify.skipped} skipped`;
 }
 
 function pushList(lines: string[], title: string, items: string[] | undefined): void {
-	if (!items || items.length === 0) return;
+	if (!items?.length) return;
 	lines.push(`### ${title}`);
 	for (const item of items.slice(0, 8)) lines.push(`- ${item}`);
 }
 
 function pushContradictions(lines: string[], items: ScrutinyAnalysis["contradictions"]): void {
-	if (!items || items.length === 0) return;
-	lines.push(`### Contradictions`);
+	if (!items?.length) return;
+	lines.push("### Contradictions");
 	for (const item of items.slice(0, 6)) {
 		lines.push(`- ${item.topic}`);
 		for (const stance of item.stances.slice(0, 4)) lines.push(`  - ${stance.model}: ${stance.stance}`);
@@ -199,25 +199,30 @@ function pushContradictions(lines: string[], items: ScrutinyAnalysis["contradict
 }
 
 function pushUnique(lines: string[], items: ScrutinyAnalysis["unique_insights"]): void {
-	if (!items || items.length === 0) return;
-	lines.push(`### Unique insights`);
+	if (!items?.length) return;
+	lines.push("### Unique insights");
 	for (const item of items.slice(0, 8)) lines.push(`- ${item.model}: ${item.insight}`);
 }
 
-function roleCoverage(responses: PanelResponse[]): string[] {
+function roleCoverage(responses: PanelResponse[], declaredLenses: readonly string[], unassignedLenses: readonly string[]): string[] {
 	const ok = responses.filter((response) => response.status === "ok" && response.content.trim());
 	const failed = responses.filter((response) => response.status !== "ok" || !response.content.trim());
+	const assigned = responses.map((response) => response.role);
 	return unique([
+		declaredLenses.length ? `Declared lenses: ${declaredLenses.join(", ")}.` : undefined,
+		assigned.length ? `Assigned lenses: ${assigned.join(", ")}.` : undefined,
 		ok.length ? `Covered lenses: ${ok.map((response) => response.role).join(", ")}.` : undefined,
 		failed.length ? `Missing/failed lenses: ${failed.map((response) => response.role).join(", ")}.` : undefined,
+		unassignedLenses.length ? `Unassigned lenses: ${unassignedLenses.join(", ")}.` : undefined,
 	].filter((item): item is string => Boolean(item)));
 }
 
-function roleGaps(responses: PanelResponse[]): string[] {
+function roleGaps(responses: PanelResponse[], unassignedLenses: readonly string[]): string[] {
 	const failed = responses.filter((response) => response.status !== "ok" || !response.content.trim());
 	const missing = responses.flatMap((response) => extractMissingContextLines(response.content));
 	return unique([
-		"Roles mode does not compare panelists for contradiction; inspect missing lenses and uncovered risk classes.",
+		"Roles strategy does not compare panelists for contradiction; inspect missing and unassigned lenses.",
+		...unassignedLenses.map((lens) => `No panel member assigned to ${lens}.`),
 		...failed.map((response) => `No usable coverage from ${response.role} (${response.model}).`),
 		...missing,
 	]).slice(0, 8);
@@ -230,11 +235,7 @@ function extractMissingContextLines(text: string): string[] {
 }
 
 function extractBullets(text: string): string[] {
-	return text
-		.split(/\r?\n/)
-		.map((line) => line.trim().replace(/^[-*•]\s+/, ""))
-		.filter((line) => line.length >= 24 && line.length <= 400)
-		.slice(0, 30);
+	return text.split(/\r?\n/).map((line) => line.trim().replace(/^[-*•]\s+/, "")).filter((line) => line.length >= 24 && line.length <= 400).slice(0, 30);
 }
 
 function extractRiskLines(text: string): string[] {
@@ -250,14 +251,8 @@ function isDistinct(line: string, otherTexts: string[]): boolean {
 function sharedKeywords(texts: string[]): string[] {
 	if (texts.length < 2) return [];
 	const counts = new Map<string, number>();
-	for (const text of texts) {
-		for (const token of new Set(keywords(text))) counts.set(token, (counts.get(token) ?? 0) + 1);
-	}
-	return [...counts.entries()]
-		.filter(([, count]) => count >= Math.min(2, texts.length))
-		.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-		.slice(0, 10)
-		.map(([token]) => token);
+	for (const text of texts) for (const token of new Set(keywords(text))) counts.set(token, (counts.get(token) ?? 0) + 1);
+	return [...counts.entries()].filter(([, count]) => count >= Math.min(2, texts.length)).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 10).map(([token]) => token);
 }
 
 function detectContradictions(responses: PanelResponse[]): ScrutinyAnalysis["contradictions"] {
@@ -267,18 +262,15 @@ function detectContradictions(responses: PanelResponse[]): ScrutinyAnalysis["con
 	const negation = /\b(not|no|never|should not|don'?t|won'?t|cannot|can'?t|avoid|wrong|incorrect|disagree)\b/i;
 	for (let i = 0; i < ok.length; i++) {
 		for (let j = i + 1; j < ok.length; j++) {
-			const a = ok[i].content.toLowerCase();
-			const b = ok[j].content.toLowerCase();
-			const shared = sharedKeywords([ok[i].content, ok[j].content]).filter((term) => term.length >= 6);
-			const aNeg = negation.test(ok[i].content);
-			const bNeg = negation.test(ok[j].content);
+			const shared = sharedKeywords([ok[i]!.content, ok[j]!.content]).filter((term) => term.length >= 6);
+			const aNeg = negation.test(ok[i]!.content);
+			const bNeg = negation.test(ok[j]!.content);
 			if (shared.length >= 2 && aNeg !== bNeg) {
-				const topic = shared.slice(0, 3).join(" / ");
 				contradictions.push({
-					topic,
+					topic: shared.slice(0, 3).join(" / "),
 					stances: [
-						{ model: ok[i].model, stance: truncate(firstSentenceAround(ok[i].content, shared[0]), 160) },
-						{ model: ok[j].model, stance: truncate(firstSentenceAround(ok[j].content, shared[0]), 160) },
+						{ model: ok[i]!.model, stance: truncate(firstSentenceAround(ok[i]!.content, shared[0]!), 160) },
+						{ model: ok[j]!.model, stance: truncate(firstSentenceAround(ok[j]!.content, shared[0]!), 160) },
 					],
 				});
 			}
@@ -296,9 +288,7 @@ function firstSentenceAround(text: string, term: string): string {
 }
 
 function keywords(text: string): string[] {
-	return text
-		.toLowerCase()
-		.match(/[a-z][a-z0-9_-]{4,}/g)?.filter((token) => !STOP.has(token)) ?? [];
+	return text.toLowerCase().match(/[a-z][a-z0-9_-]{4,}/g)?.filter((token) => !STOP.has(token)) ?? [];
 }
 
 function unique(items: string[]): string[] {

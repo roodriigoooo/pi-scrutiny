@@ -1,14 +1,19 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { ScoutCandidate, ScoutReport, ScrutinySurface } from "./types.js";
-import { SURFACE_DEFAULTS } from "./surfaces.js";
+import type { DeliberationStrategy, ResolvedPanelAssignment, ScoutCandidate, ScoutReport, ScrutinySurface } from "./types.js";
 import { pruneScoutCandidates } from "./scout.js";
 import { formatTokens } from "./util.js";
 
 export type PacketPreviewInput = {
 	runId: string;
 	surface: ScrutinySurface;
+	template: string;
+	panelName?: string;
+	strategy?: DeliberationStrategy;
+	assignments: ReadonlyArray<ResolvedPanelAssignment>;
+	unassignedLenses: readonly string[];
+	includeGitDiff: boolean;
 	packet: string;
 	scout?: ScoutReport;
 	panelCount: number;
@@ -90,16 +95,20 @@ class PacketPreview implements Component {
 		const warning = (s: string) => this.theme.fg("warning", s);
 		const success = (s: string) => this.theme.fg("success", s);
 		const packet = this.currentPacket();
-		const stats = computeStats(packet, this.input.panelCount, this.input.surface, this.input.scout, this.excluded);
+		const stats = computeStats(packet, this.input.panelCount, this.input.surface, this.input.scout, this.excluded, this.input.includeGitDiff);
 		const enabledCount = this.candidates.length - this.excluded.size;
 
 		lines.push(topBorder(w, `${accent("scrutiny packet preview")} ${dim(this.input.runId)}`, this.theme));
-		lines.push(frameLine(`${accent(this.input.surface)} ${dim("pre-spend gate · exact packet built, panel not started")}`, w, this.theme));
+		lines.push(frameLine(`${accent(`template:${this.input.template}`)} ${dim(`panel:${this.input.panelName ?? "none"} · ${this.input.strategy ?? "verify"} · pre-spend gate`)}`, w, this.theme));
 		lines.push(frameLine(`${accent("budget")} packet ~${formatTokens(stats.packetTokens)} tok × ${this.input.panelCount} panel = ~${formatTokens(stats.replicatedTokens)} replicated input${this.input.judgeRan ? dim(" · map reads outputs") : dim(" · map off")}${this.input.verifyRan ? warning(" · verify after panel") : ""}`, w, this.theme));
 		lines.push(frameLine(`${dim("sections")} ${stats.sections.slice(0, 7).join(" · ") || "none"}${stats.sections.length > 7 ? ` · +${stats.sections.length - 7}` : ""}`, w, this.theme));
 		lines.push(midBorder(w, this.theme));
 
 		lines.push(frameLine(`${accent("included")} scout candidates ${enabledCount}/${this.candidates.length} · prior runs ${stats.priorCount} · git ${stats.hasGit ? success("on") : dim("off")}`, w, this.theme));
+		if (this.input.strategy === "roles") {
+			for (const assignment of this.input.assignments) lines.push(frameLine(`${dim("assignment")} ${assignment.model} → ${assignment.lens ?? "missing lens"}`, w, this.theme));
+			if (this.input.unassignedLenses.length) lines.push(frameLine(warning(`unassigned lenses: ${this.input.unassignedLenses.join(", ")}`), w, this.theme));
+		}
 		if (this.candidates.length === 0) {
 			const note = this.input.scout?.skipped ? dim("  scout skipped: no anchors found") : dim("  no toggleable scout candidates in packet");
 			lines.push(frameLine(note, w, this.theme));
@@ -148,7 +157,7 @@ class PacketPreview implements Component {
 	}
 }
 
-function computeStats(packet: string, panelCount: number, surface: ScrutinySurface, scout: ScoutReport | undefined, excluded: ReadonlySet<string>): PacketStats {
+function computeStats(packet: string, panelCount: number, surface: ScrutinySurface, scout: ScoutReport | undefined, excluded: ReadonlySet<string>, includeGitDiff: boolean): PacketStats {
 	const packetTokens = Math.ceil(packet.length / 4);
 	const sections = [...packet.matchAll(/^##\s+(.+)$/gm)].map((match) => match[1].trim());
 	const hasGit = /^## Git working tree$/m.test(packet);
@@ -163,7 +172,7 @@ function computeStats(packet: string, panelCount: number, surface: ScrutinySurfa
 	} else if (surface !== "verify") {
 		possibleGaps.push("no context scout section found");
 	}
-	if (!hasGit && SURFACE_DEFAULTS[surface].includeGitDiff) possibleGaps.push("git diff not included for this surface/run");
+	if (!hasGit && includeGitDiff) possibleGaps.push("git diff not included for this run");
 	return { packetTokens, replicatedTokens: packetTokens * Math.max(1, panelCount), sections, hasGit, candidateCount, priorCount, possibleGaps };
 }
 
