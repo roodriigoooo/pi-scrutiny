@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: npm version increment to publish
+        description: npm version increment to publish (ignored when resuming)
         required: true
         type: choice
         default: patch
@@ -26,6 +26,11 @@ on:
           - next
           - beta
           - alpha
+      resume_existing:
+        description: Publish current already-tagged version without another bump
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,17 +47,20 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 22
-          cache: npm
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install OIDC-capable npm
+        run: npm install --global npm@11
 
       - name: Install dependencies
         run: npm ci
@@ -61,11 +69,13 @@ jobs:
         run: npm run check
 
       - name: Configure git author
+        if: ${{ inputs.resume_existing == false }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Bump package version
+        if: ${{ inputs.resume_existing == false }}
         run: |
           npm version "${{ inputs.version }}" -m "chore(release): %s"
 
@@ -75,22 +85,45 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Verify bumped package
+      - name: Validate existing release tag
+        if: ${{ inputs.resume_existing }}
+        run: |
+          TAG="v${{ steps.package.outputs.version }}"
+          git rev-parse --verify "refs/tags/${TAG}^{commit}"
+          git diff --quiet "$TAG" -- package.json package-lock.json README.md extensions
+
+      - name: Verify release package
         run: npm run release:dry
 
       - name: Push version commit and tag
+        if: ${{ inputs.resume_existing == false }}
         run: git push --follow-tags
 
-      - name: Publish to npm
-        run: npm publish --access public --provenance --tag "${{ inputs.dist_tag }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Check npm release state
+        id: registry
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION="${{ steps.package.outputs.version }}"
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm with trusted publishing
+        if: ${{ steps.registry.outputs.published != 'true' }}
+        run: npm publish --access public --tag "${{ inputs.dist_tag }}"
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ steps.package.outputs.version }}" \
-            --verify-tag \
-            --title "v${{ steps.package.outputs.version }}" \
-            --generate-notes
+          TAG="v${{ steps.package.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists"
+          else
+            gh release create "$TAG" \
+              --verify-tag \
+              --title "$TAG" \
+              --generate-notes
+          fi
