@@ -9,7 +9,8 @@ no internal api coupling. no new dependencies. node native type-stripping (`--ex
 ```bash
 npm run eval:smoke          # runs eval/out/{smoke.report.md,json}
 npm run eval:templates      # panel/template resolver and migration contract
-npm run eval:coverage      # unit-level surface catalog coverage (no subprocesses)
+npm run eval:setup          # first-use panel setup and persistence contract
+npm run eval:coverage       # unit-level surface catalog coverage (no subprocesses)
 npm run eval:scout         # unit-level context scout test (mock exec, no subprocesses)
 npm run eval:artifacts     # unit-level artifact memory test (temp cwd, no subprocesses)
 npm run eval:verify        # unit-level objective verify test (fake exec, no subprocesses)
@@ -25,6 +26,10 @@ extension sources keep `.js` import specifiers for pi/bun compatibility, which n
 ## template suite (`eval:templates`)
 
 Unit-level contract suite for config v2. It validates named panel/template parsing, built-in template validation, panel/template composition and precedence, legacy migration behavior, forbidden strategy/lens combinations, roles cardinality and uncovered lenses, prompt identity/lens preservation, roles coverage semantics, and invalid-config artifact gating. Uses a temporary config and fake executor; no model calls.
+
+## setup suite (`eval:setup`)
+
+not black-box. drives the real palette/setup components with a fake TUI and authenticated-model registry, plus temporary global config. It covers the unconfigured state, task/template/toggle preservation, no automatic run after save, v2 global save/reload with `0600` permissions, explicit collision handling, no-model login guidance, non-interactive exit, thinking-level capabilities, and verify without a panel. No credentials, model calls, or subprocesses.
 
 ## coverage suite (`eval:coverage`)
 
@@ -50,7 +55,7 @@ not black-box. imports `normalize.ts` (type-only relative imports, no resolve ho
 
 - `help`, `models` — command paths emit clean messages.
 - `verify-ground-truth` — the `verify` surface runs objective repo checks against this repo. known ground truth: typecheck passes, tests+lint fail (missing npm scripts). this is the real arbiter eval: 6 assertions over pass/fail counts and per-check status.
-- `missing-panel-gate` — deliberation with no panel configured returns a non-synthesizing failure (`failure_reason: missing_panel`), not a synthesized answer from nothing.
+- `missing-panel-gate` — non-interactive deliberation with no panel returns concise TUI setup guidance and creates no run artifacts.
 
 ## adding a panel/deliberation suite
 

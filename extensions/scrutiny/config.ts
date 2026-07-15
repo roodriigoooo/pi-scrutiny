@@ -36,6 +36,16 @@ const DEFAULT_VERIFY_CHECKS: VerifyCheckSpec[] = [
 
 export type ScrutinyConfigOptions = { cwd?: string; projectTrusted?: boolean };
 
+export class PanelNameCollisionError extends ConfigurationError {
+	readonly panelName: string;
+
+	constructor(panelName: string) {
+		super(`panels.${panelName} already exists in global scrutiny config`);
+		this.name = "PanelNameCollisionError";
+		this.panelName = panelName;
+	}
+}
+
 type ConfigPatch = {
 	defaultPanel?: string | undefined;
 	panels?: PanelDefinition[];
@@ -62,6 +72,52 @@ export function userConfigPath(): string {
 
 export function projectConfigPath(cwd: string): string {
 	return path.join(cwd, CONFIG_DIR_NAME, "scrutiny.json");
+}
+
+function configDocumentWithPanel(value: unknown, panel: PanelDefinition, overwrite = false, source = "global scrutiny config"): Record<string, unknown> {
+	validatePanelForSave(panel, source);
+	if (!isRecord(value)) throw new ConfigurationError(`${source} must contain a JSON object`);
+	if (value.schemaVersion !== 2) {
+		if (Object.keys(value).length > 0) throw new ConfigurationError(`${source} uses legacy configuration. Migrate it with /scrutiny config edit before adding panels through setup.`);
+	} else {
+		parseConfigPatch(value, source);
+	}
+	const panels = value.schemaVersion === 2 && isRecord(value.panels) ? value.panels : {};
+	if (Object.hasOwn(panels, panel.name) && !overwrite) throw new PanelNameCollisionError(panel.name);
+	return {
+		...value,
+		schemaVersion: 2,
+		defaultPanel: typeof value.defaultPanel === "string" && value.defaultPanel.trim() ? value.defaultPanel : panel.name,
+		panels: {
+			...panels,
+			[panel.name]: {
+				members: panel.members.map((member) => ({
+					model: member.model,
+					...(member.thinking === undefined ? {} : { thinking: member.thinking }),
+				})),
+			},
+		},
+	};
+}
+
+export async function saveUserPanel(panel: PanelDefinition, options: { overwrite?: boolean } = {}): Promise<string> {
+	const file = userConfigPath();
+	let document: unknown = {};
+	try {
+		document = JSON.parse(await fs.promises.readFile(file, "utf8"));
+	} catch (error) {
+		if (!isNodeError(error) || error.code !== "ENOENT") throw new ConfigurationError(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const next = configDocumentWithPanel(document, panel, options.overwrite, file);
+	await fs.promises.mkdir(path.dirname(file), { recursive: true });
+	const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+	try {
+		await fs.promises.writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		await fs.promises.rename(temporary, file);
+	} finally {
+		await fs.promises.rm(temporary, { force: true }).catch(() => undefined);
+	}
+	return file;
 }
 
 export function exampleConfigJson(): string {
@@ -492,6 +548,15 @@ function optionalThinkingLevel(value: unknown, at: string): ThinkingLevel | unde
 	if (value === undefined) return undefined;
 	if (value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh") return value;
 	throw new ConfigurationError(`${at} must be a supported thinking level`);
+}
+
+function validatePanelForSave(panel: PanelDefinition, source: string): void {
+	if (!panel.name.trim()) throw new ConfigurationError(`${source} panel name must be non-empty`);
+	parsePanelDefinition(panel.name, { members: panel.members }, `${source}.panels.${panel.name}`);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

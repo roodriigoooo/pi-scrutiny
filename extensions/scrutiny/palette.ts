@@ -2,9 +2,10 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readScrutinyConfig } from "./config.js";
+import { showPanelSetup } from "./setup.js";
 import { allTemplates, resolveRunPlan, strategyPlainLanguage } from "./templates.js";
 import { inferSurface, SURFACE_HINTS } from "./surfaces.js";
-import type { JudgeMode, ResolvedRunPlan, ScrutinyConfig, ScrutinyParams } from "./types.js";
+import type { DeliberationTemplate, JudgeMode, ResolvedRunPlan, ScrutinyConfig, ScrutinyParams, ScrutinyTemplate } from "./types.js";
 import { formatTokens } from "./util.js";
 
 const JUDGE_MODES: JudgeMode[] = ["auto", "off", "on"];
@@ -19,43 +20,79 @@ type PaletteState = {
 	showHelp: boolean;
 };
 
+type PaletteSelection = ScrutinyParams | { action: "setup" } | null;
+
 export async function showScrutinyPalette(ctx: ExtensionCommandContext, initialPrompt = ""): Promise<ScrutinyParams | null> {
-	const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-	const templates = allTemplates(config);
+	let config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+	let templates = allTemplates(config);
 	const inferred = inferSurface(initialPrompt);
 	const state: PaletteState = {
 		prompt: initialPrompt,
 		templateIndex: Math.max(0, templates.findIndex((template) => template.name === inferred)),
-		panelIndex: 0,
+		panelIndex: Math.max(0, config.panels.findIndex((panel) => panel.name === config.defaultPanel)),
 		showHelp: false,
 	};
-	return ctx.ui.custom<ScrutinyParams | null>(
-		(tui, theme, _kb, done) => new ScrutinyPalette(tui, theme, config, templates, state, done),
-		{
-			overlay: true,
-			overlayOptions: { anchor: "center", width: "74%", minWidth: 68, maxHeight: "82%", margin: 1 },
-		},
-	);
+
+	while (true) {
+		const selected = await ctx.ui.custom<PaletteSelection>(
+			(tui, theme, _kb, done) => new ScrutinyPalette(tui, theme, config, templates, state, done),
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: "74%", minWidth: 68, maxHeight: "82%", margin: 1 },
+			},
+		);
+		if (!selected) return null;
+		if (!("action" in selected)) return selected;
+
+		const activeTemplate = templates[state.templateIndex];
+		const setup = await showPanelSetup(ctx, {
+			config,
+			maxMembers: setupMemberLimit(activeTemplate, config),
+		});
+		if (setup) {
+			config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+			templates = allTemplates(config);
+			state.panelIndex = Math.max(0, config.panels.findIndex((panel) => panel.name === setup.panelName));
+		}
+	}
 }
 
 class ScrutinyPalette implements Component, Focusable {
 	focused = false;
+	private readonly tui: TUI;
+	private readonly theme: Theme;
+	private readonly config: ScrutinyConfig;
+	private readonly templates: ScrutinyConfig["templates"];
+	private readonly state: PaletteState;
+	private readonly done: (value: PaletteSelection) => void;
 
 	constructor(
-		private readonly tui: TUI,
-		private readonly theme: Theme,
-		private readonly config: ScrutinyConfig,
-		private readonly templates: ScrutinyConfig["templates"],
-		private readonly state: PaletteState,
-		private readonly done: (value: ScrutinyParams | null) => void,
-	) {}
+		tui: TUI,
+		theme: Theme,
+		config: ScrutinyConfig,
+		templates: ScrutinyConfig["templates"],
+		state: PaletteState,
+		done: (value: PaletteSelection) => void,
+	) {
+		this.tui = tui;
+		this.theme = theme;
+		this.config = config;
+		this.templates = templates;
+		this.state = state;
+		this.done = done;
+	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.enter)) {
 			const prompt = this.state.prompt.trim();
 			const template = this.activeTemplate();
 			const plan = this.plan();
-			if (!prompt || !template || !plan) return;
+			if (!template) return;
+			if (!plan) {
+				if (this.canSetupPanel()) this.done({ action: "setup" });
+				return;
+			}
+			if (!prompt) return;
 			this.done({
 				prompt,
 				template: template.name,
@@ -118,6 +155,7 @@ class ScrutinyPalette implements Component, Focusable {
 			lines.push(frameLine(this.theme.fg("error", "× no templates are available"), w, this.theme));
 		} else if (!plan) {
 			lines.push(frameLine(this.theme.fg("error", `× ${this.planError() ?? "incompatible template/panel"}`), w, this.theme));
+			if (this.canSetupPanel()) lines.push(frameLine(`${ok("◆")} ${dim("enter configure global panel · task state retained · no spend")}`, w, this.theme));
 		} else if (!plan.panel) {
 			lines.push(frameLine(`${ok("◆")} ${dim("objective arbiter · no panel · no judge")}`, w, this.theme));
 			lines.push(frameLine(`${dim("checks:")} ${accent(this.verifyCheckNames())}`, w, this.theme));
@@ -140,12 +178,12 @@ class ScrutinyPalette implements Component, Focusable {
 		lines.push(midBorder(w, this.theme));
 		const help = this.state.showHelp
 			? [
-				"enter review packet · esc cancel",
+				plan ? "enter review packet · esc cancel" : this.canSetupPanel() ? "enter configure panel · esc cancel" : "esc cancel",
 				"tab/↓ template · shift-tab/↑ previous template · ctrl+p panel",
 				"ctrl+j evidence map · ctrl+g git diff · ctrl+v verify",
 				"template and panel selections are independent",
 			]
-			: ["enter review packet · esc cancel · tab template · ^p panel · ^j map · ^g git · ^v verify · ? help"];
+			: [plan ? "enter review packet · esc cancel · tab template · ^p panel · ^j map · ^g git · ^v verify · ? help" : this.canSetupPanel() ? "enter setup · esc cancel · tab template · ^j map · ^g git · ^v verify · ? help" : "esc cancel · tab template · ? help"];
 		for (const line of help) lines.push(frameLine(dim(line), w, this.theme));
 		lines.push(bottomBorder(w, this.theme));
 		return lines;
@@ -204,16 +242,25 @@ class ScrutinyPalette implements Component, Focusable {
 
 	private chipLine(plan: ResolvedRunPlan | undefined): string {
 		const template = this.activeTemplate();
+		const deliberation = this.deliberationTemplate();
 		const chips = [chip(this.theme, `template:${template?.name ?? "none"}`, "accent")];
 		if (plan?.panel) chips.push(chip(this.theme, `panel:${plan.panel.name}`, "success"));
 		else if (template?.surface !== "verify") chips.push(chip(this.theme, `panel:${this.selectedPanelName() ?? "none"}`, "error"));
-		if (plan?.strategy) chips.push(chip(this.theme, plan.strategy, plan.strategy === "replicate" ? "accent" : "muted"));
+		const strategy = plan?.strategy ?? deliberation?.strategy;
+		if (strategy) chips.push(chip(this.theme, strategy, strategy === "replicate" ? "accent" : "muted"));
 		if (plan) {
 			chips.push(chip(this.theme, `map:${plan.policies.judgeMode}`, plan.policies.judgeMode === "off" ? "muted" : "warning"));
 			chips.push(chip(this.theme, `git:${plan.policies.includeGitDiff ? "on" : "off"}`, plan.policies.includeGitDiff ? "warning" : "muted"));
 			if (plan.strategy) chips.push(chip(this.theme, `verify:${plan.policies.verify ? "on" : "off"}`, plan.policies.verify ? "warning" : "muted"));
 			if (plan.unassignedLenses.length) chips.push(chip(this.theme, `unassigned:${plan.unassignedLenses.length}`, "warning"));
 			chips.push(chip(this.theme, this.estimateChip(plan), "accent"));
+		} else if (deliberation) {
+			const judgeMode = this.effectiveJudgeMode();
+			const includeGitDiff = this.effectiveIncludeGitDiff();
+			const verify = this.effectiveVerify();
+			chips.push(chip(this.theme, `map:${judgeMode}`, judgeMode === "off" ? "muted" : "warning"));
+			chips.push(chip(this.theme, `git:${includeGitDiff ? "on" : "off"}`, includeGitDiff ? "warning" : "muted"));
+			chips.push(chip(this.theme, `verify:${verify ? "on" : "off"}`, verify ? "warning" : "muted"));
 		}
 		return chips.join(" ");
 	}
@@ -249,26 +296,52 @@ class ScrutinyPalette implements Component, Focusable {
 	}
 
 	private cycleJudge(): void {
-		const current = this.plan()?.policies.judgeMode ?? "off";
+		if (!this.deliberationTemplate()) return;
+		const current = this.plan()?.policies.judgeMode ?? this.effectiveJudgeMode();
 		this.state.judgeMode = JUDGE_MODES[(JUDGE_MODES.indexOf(current) + 1) % JUDGE_MODES.length]!;
 		this.rerender();
 	}
 
 	private toggleGit(): void {
-		this.state.includeGitDiff = !(this.plan()?.policies.includeGitDiff ?? false);
+		this.state.includeGitDiff = !(this.plan()?.policies.includeGitDiff ?? this.effectiveIncludeGitDiff());
 		this.rerender();
 	}
 
 	private toggleVerify(): void {
-		const plan = this.plan();
-		if (!plan?.strategy) return;
-		this.state.verify = !plan.policies.verify;
+		if (!this.deliberationTemplate()) return;
+		this.state.verify = !(this.plan()?.policies.verify ?? this.effectiveVerify());
 		this.rerender();
+	}
+
+	private canSetupPanel(): boolean {
+		return Boolean(this.deliberationTemplate()) && this.config.configurationErrors.length === 0;
+	}
+
+	private deliberationTemplate(): DeliberationTemplate | undefined {
+		const template = this.activeTemplate();
+		return template?.surface === "verify" ? undefined : template;
+	}
+
+	private effectiveJudgeMode(): JudgeMode {
+		return this.state.judgeMode ?? this.deliberationTemplate()?.judgeMode ?? "off";
+	}
+
+	private effectiveIncludeGitDiff(): boolean {
+		return this.state.includeGitDiff ?? this.activeTemplate()?.includeGitDiff ?? this.config.includeGitDiff;
+	}
+
+	private effectiveVerify(): boolean {
+		return this.state.verify ?? this.deliberationTemplate()?.verify ?? false;
 	}
 
 	private rerender(): void {
 		this.tui.requestRender();
 	}
+}
+
+function setupMemberLimit(template: ScrutinyTemplate | undefined, config: ScrutinyConfig): number {
+	if (template?.surface !== "verify" && template?.strategy === "roles") return Math.min(config.maxPanelModels, template.lenses?.length ?? config.maxPanelModels);
+	return config.maxPanelModels;
 }
 
 function chip(theme: Theme, text: string, color: "accent" | "muted" | "success" | "warning" | "error"): string {
