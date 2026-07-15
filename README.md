@@ -53,11 +53,20 @@ Before any panel spend, the TUI shows the exact task packet and requires confirm
 
 ## Configure
 
+Start with interactive panel setup:
+
 ```text
-/scrutiny config edit           # global ~/.pi/agent/scrutiny.json
-/scrutiny config edit project   # project .pi/scrutiny.json (trusted projects only)
+/scrutiny setup                 # choose authenticated models and save a global panel
+/scrutiny config edit           # advanced: edit global ~/.pi/agent/scrutiny.json
+/scrutiny config edit project   # advanced: edit project .pi/scrutiny.json (trusted projects only)
 /scrutiny config                # sources, active panels/templates, diagnostics
 ```
+
+Setup lists only models available through authenticated Pi providers, supports provider/model search and per-member thinking levels, asks for a panel name, and saves to `~/.pi/agent/scrutiny.json`. It never starts a run or spends model tokens. Existing panel names require explicit replacement confirmation.
+
+Opening `/scrutiny` without a usable deliberation panel offers the same setup flow in place. Prompt, template, panel-independent toggles, and surface selection remain intact; after save, Scrutiny returns to the palette for packet/spend review and final run confirmation.
+
+If no models are available, use Pi's `/login` and `/model` flows first. In non-interactive mode, run setup later in a TUI or edit global config manually.
 
 Configuration sources merge in order: global → trusted project → environment. Named panels and templates merge by name; a later source replaces a same-named entry.
 
@@ -123,7 +132,8 @@ The legacy raw keys remain readable temporarily for migration, but public comman
 ## Use
 
 ```text
-/scrutiny                                    # open the palette
+/scrutiny                                    # open palette; offers setup when needed
+/scrutiny setup                              # create or update a reusable global panel
 /scrutiny models                             # current default lineup
 /scrutiny panels                             # model lineups only
 /scrutiny templates                          # strategy and policies
@@ -137,7 +147,7 @@ The legacy raw keys remain readable temporarily for migration, but public comman
 /scrutiny ask compare these two implementation plans
 ```
 
-In the palette, `Tab` cycles templates and `Ctrl+P` cycles panels independently. Switching to `verify` hides the panel without deleting the retained selection.
+In the palette, `Tab` cycles templates and `Ctrl+P` cycles panels independently. Switching to `verify` hides the panel without deleting the retained selection. `verify` remains runnable without any panel because it makes no model calls.
 
 ## Runtime and artifacts
 
@@ -162,6 +172,7 @@ verify.json       # when verify ran
 npm install
 npm run check
 npm run eval:templates
+npm run eval:setup
 npm run eval:boundaries
 npm run eval:coverage
 npm run eval:scout

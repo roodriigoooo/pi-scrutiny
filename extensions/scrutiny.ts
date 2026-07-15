@@ -6,9 +6,10 @@ import { SCRUTINY_PACKET_PREVIEW_CANCELLED, runScrutiny } from "./scrutiny/engin
 import { historyText, showHistoryPicker } from "./scrutiny/history.js";
 import { showScrutinyPalette } from "./scrutiny/palette.js";
 import { confirmPacketPreview } from "./scrutiny/preview.js";
+import { PANEL_SETUP_NON_INTERACTIVE, showPanelSetup } from "./scrutiny/setup.js";
 import { activeProgresses, recentRuns } from "./scrutiny/registry.js";
-import { SCRUTINY_STOP_STATEMENT, SCRUTINY_SURFACES, SCRUTINY_SURFACE_SET, SURFACE_DOCS } from "./scrutiny/surfaces.js";
-import { allTemplates } from "./scrutiny/templates.js";
+import { inferSurface, SCRUTINY_STOP_STATEMENT, SCRUTINY_SURFACES, SCRUTINY_SURFACE_SET, SURFACE_DOCS } from "./scrutiny/surfaces.js";
+import { allTemplates, MissingPanelError, resolveRunPlan } from "./scrutiny/templates.js";
 import type { ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./scrutiny/types.js";
 import { scrutinyStatusText, renderScrutinyDock, renderScrutinyMessage } from "./scrutiny/ui.js";
 
@@ -50,10 +51,17 @@ async function waitForPiIdle(ctx: ExtensionCommandContext): Promise<void> {
 export default function (pi: ExtensionAPI) {
 	pi.registerMessageRenderer("scrutiny-result", renderScrutinyMessage);
 	pi.registerCommand("scrutiny", {
-		description: "Run or inspect Pi Scrutiny by explicit command (usage: /scrutiny | help | models | runs | history | panels | templates | config | <surface>: <prompt> | @<template>: <prompt> | ask <prompt>)",
+		description: "Run, set up, or inspect Pi Scrutiny by explicit command (usage: /scrutiny | setup | help | models | runs | history | panels | templates | config | <surface>: <prompt> | @<template>: <prompt> | ask <prompt>)",
 		handler: async (args, ctx) => {
 			await waitForPiIdle(ctx);
 			const runAndPublish = async (params: ScrutinyParams) => {
+				if (ctx.mode !== "tui") {
+					const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+					if (requiresPanelSetup(params, config)) {
+						publishScrutinyMessage(pi, { customType: "scrutiny-result", content: PANEL_SETUP_NON_INTERACTIVE, display: true, details: { kind: "setup" } });
+						return;
+					}
+				}
 				try {
 					if (ctx.hasUI) ctx.ui.setStatus("scrutiny", "scrutiny starting");
 					const { result, brief } = await runScrutiny({
@@ -79,8 +87,18 @@ export default function (pi: ExtensionAPI) {
 
 			const trimmed = args.trim();
 			if (!trimmed || trimmed === "ui" || trimmed === "palette") {
+				if (ctx.mode !== "tui") {
+					const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+					const content = config.panels.length ? "Scrutiny palette requires Pi TUI. Use an inline command such as `/scrutiny consult: <prompt>`." : PANEL_SETUP_NON_INTERACTIVE;
+					return publishScrutinyMessage(pi, { customType: "scrutiny-result", content, display: true, details: { kind: "setup" } });
+				}
 				const params = await showScrutinyPalette(ctx);
 				if (params) await runAndPublish(params);
+				return;
+			}
+			if (trimmed === "setup") {
+				if (ctx.mode !== "tui") return publishScrutinyMessage(pi, { customType: "scrutiny-result", content: PANEL_SETUP_NON_INTERACTIVE, display: true, details: { kind: "setup" } });
+				await showPanelSetup(ctx);
 				return;
 			}
 			if (trimmed === "help") return publishScrutinyMessage(pi, { customType: "scrutiny-result", content: helpText(), display: true, details: { kind: "help" } });
@@ -192,8 +210,9 @@ function configText(config: ScrutinyConfig): string {
 		...(config.diagnostics.length ? ["", "## migration", ...config.diagnostics.map((message) => `- ${message.split("\n")[0]}`)] : []),
 		...(config.configurationErrors.length ? ["", "## errors", ...config.configurationErrors.map((message) => `- ${message}`)] : []),
 		"",
-		"## edit",
-		"- `/scrutiny config edit` edits global `~/.pi/agent/scrutiny.json`.",
+		"## setup",
+		"- `/scrutiny setup` builds a reusable global panel from authenticated Pi models.",
+		"- `/scrutiny config edit` edits global `~/.pi/agent/scrutiny.json` (advanced).",
 		"- `/scrutiny config edit project` edits project `.pi/scrutiny.json` (trusted projects only).",
 	].join("\n");
 }
@@ -208,6 +227,7 @@ function helpText(): string {
 		...SCRUTINY_SURFACES.map((surface) => `- \`${surface}\` — ${SURFACE_DOCS[surface].mode}. ${SURFACE_DOCS[surface].description}`),
 		"",
 		"activation: Scrutiny starts only when you invoke /scrutiny or confirm through its palette. Natural-language requests do not start a run.",
+		"first use: /scrutiny setup saves an authenticated-model lineup globally; setup itself causes no spend and never starts a run.",
 		"before panel spend: human reviews and confirms exact packet in TUI.",
 		"strategy: replicate means byte-identical prompts and disagreement signal; roles means explicit lenses and coverage/gaps signal.",
 		"completion: result displays and persists. Pi remains idle; no automatic agent turn, synthesis, diagnostics, edits, or implementation begin.",
@@ -215,6 +235,7 @@ function helpText(): string {
 		"",
 		"```text",
 		"/scrutiny",
+		"/scrutiny setup",
 		"/scrutiny models",
 		"/scrutiny panels",
 		"/scrutiny templates",
@@ -240,7 +261,7 @@ function modelsText(config: ScrutinyConfig): string {
 		`tools: ${config.tools.length ? config.tools.join(", ") : "none"}`,
 		`verify checks: ${config.verifyChecks.map((check) => check.name).join(", ") || "none"}`,
 		"",
-		"Run `/scrutiny config edit` for persistent setup. `PI_SCRUTINY_*` env vars still override files.",
+		"Run `/scrutiny setup` to build a reusable global panel. `/scrutiny config edit` remains the advanced editor; `PI_SCRUTINY_*` env vars still override files.",
 	].join("\n");
 }
 
@@ -251,7 +272,7 @@ function runsText(): string {
 }
 
 function panelsText(config: ScrutinyConfig): string {
-	if (!config.panels.length) return "# scrutiny panels\n\nno panels configured. Run `/scrutiny config edit` and add a v2 `panels` object.";
+	if (!config.panels.length) return "# scrutiny panels\n\nno panels configured. Run `/scrutiny setup` to choose authenticated models, or `/scrutiny config edit` for advanced configuration.";
 	return [
 		"# scrutiny panels",
 		"",
@@ -272,6 +293,21 @@ function templatesText(config: ScrutinyConfig): string {
 		"",
 		"use: `/scrutiny @<template>: <prompt>`",
 	].join("\n");
+}
+
+function requiresPanelSetup(params: ScrutinyParams, config: ScrutinyConfig): boolean {
+	try {
+		resolveRunPlan({
+			templateName: params.template ?? params.surface ?? inferSurface(params.prompt),
+			panelName: params.panel,
+			includeGitDiff: params.includeGitDiff,
+			judgeMode: params.judgeMode,
+			verify: params.verify,
+		}, config);
+		return false;
+	} catch (error) {
+		return error instanceof MissingPanelError;
+	}
 }
 
 function formatPanelMember(member: { model: string; thinking?: string }): string {

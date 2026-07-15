@@ -32,6 +32,9 @@ jobs:
       - name: Template configuration eval
         run: npm run eval:templates
 
+      - name: First-use panel setup eval
+        run: npm run eval:setup
+
       - name: Control-boundary eval
         run: npm run eval:boundaries
 

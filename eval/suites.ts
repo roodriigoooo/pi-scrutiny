@@ -4,7 +4,7 @@ import type { EvalTask } from "./types.ts";
 
 /**
  * Suite: smoke. No model keys needed. Exercises command parsing, surface
- * dispatch, missing-panel gating, and the verify arbiter against this repo.
+ * dispatch, non-interactive panel setup gating, and the verify arbiter against this repo.
  * Ground truth for verify is known: typecheck passes, tests+lint fail
  * (missing scripts in package.json).
  */
@@ -41,17 +41,16 @@ export const SMOKE_SUITE: EvalTask[] = [
 	},
 	{
 		id: "missing-panel-gate",
-		description: "deliberation surface with no panel configured returns a non-synthesizing failure",
+		description: "non-interactive deliberation with no panel returns setup guidance without creating a run",
 		surface: "consult",
 		prompt: "/scrutiny ask compare X vs Y",
 		// force empty panel by overriding env
 		councilEnv: { PI_SCRUTINY_PANEL: "" },
 		requiresPanel: true,
 		expect: [
-			{ name: "status error", check: (ctx) => ctx.result?.status === "error" },
-			{ name: "failure_reason missing_panel", check: (ctx) => ctx.result?.failure_reason === "missing_panel" },
-			{ name: "error summary written", check: (ctx) => readSummary(ctx)?.failure_reason === "missing_panel" },
-			{ name: "error index row appended", check: (ctx) => indexHasRun(ctx) },
+			{ name: "setup instruction", check: (ctx) => ctx.stdout.includes("Panel setup requires Pi TUI") && ctx.stdout.includes("/scrutiny setup") },
+			{ name: "no result artifact", check: (ctx) => ctx.result === undefined },
+			{ name: "no run directory", check: (ctx) => ctx.runDir === undefined },
 		],
 	},
 	{
