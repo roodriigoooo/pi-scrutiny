@@ -1,6 +1,6 @@
 {
   "name": "@roodriigoooo/pi-scrutiny",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi Scrutiny: multi-model panel consultation for Pi coding agent",
   "keywords": [
     "pi-package",
@@ -20,7 +20,9 @@
     "README.md"
   ],
   "pi": {
-    "extensions": ["./extensions/scrutiny.ts"]
+    "extensions": [
+      "./extensions/scrutiny.ts"
+    ]
   },
   "scripts": {
     "check": "tsc --noEmit",
