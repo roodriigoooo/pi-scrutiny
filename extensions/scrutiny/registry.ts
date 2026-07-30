@@ -28,7 +28,12 @@ export function recordRunEnd(runId: string, patch: Partial<RunRecord>): void {
 }
 
 export function recordRunProgress(progress: ScrutinyRunProgress): void {
-	progresses.set(progress.runId, { ...progress, panel: progress.panel.map((item) => ({ ...item })), judge: progress.judge ? { ...progress.judge } : undefined });
+	progresses.set(progress.runId, {
+		...progress,
+		panel: progress.panel.map((item) => ({ ...item })),
+		judge: progress.judge ? { ...progress.judge } : undefined,
+		verifyChecks: progress.verifyChecks?.map((item) => ({ ...item })),
+	});
 }
 
 export function activeProgresses(): ScrutinyRunProgress[] {

@@ -1,9 +1,17 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { exampleConfigJson, projectConfigPath, readScrutinyConfig, userConfigPath } from "./scrutiny/config.js";
+import {
+	exampleConfigJson,
+	parseConfigPatch,
+	projectConfigPath,
+	readScrutinyConfig,
+	saveUserConfigText,
+	userConfigPath,
+	writeConfigDocumentAtomically,
+} from "./scrutiny/config.js";
 import { SCRUTINY_PACKET_PREVIEW_CANCELLED, runScrutiny } from "./scrutiny/engine.js";
 import { historyText, showHistoryPicker } from "./scrutiny/history.js";
+import { PANEL_MANAGER_NON_INTERACTIVE, showPanelManager } from "./scrutiny/manager.js";
 import { showScrutinyPalette } from "./scrutiny/palette.js";
 import { confirmPacketPreview } from "./scrutiny/preview.js";
 import { PANEL_SETUP_NON_INTERACTIVE, showPanelSetup } from "./scrutiny/setup.js";
@@ -11,18 +19,31 @@ import { activeProgresses, recentRuns } from "./scrutiny/registry.js";
 import { inferSurface, SCRUTINY_STOP_STATEMENT, SCRUTINY_SURFACES, SCRUTINY_SURFACE_SET, SURFACE_DOCS } from "./scrutiny/surfaces.js";
 import { allTemplates, MissingPanelError, resolveRunPlan } from "./scrutiny/templates.js";
 import type { ScrutinyConfig, ScrutinyParams, ScrutinySurface } from "./scrutiny/types.js";
-import { scrutinyStatusText, renderScrutinyDock, renderScrutinyMessage } from "./scrutiny/ui.js";
+import { renderScrutinyDock, renderScrutinyMessage, renderScrutinyPendingDock, type ScrutinyPendingPhase } from "./scrutiny/ui.js";
 
-function refreshScrutinyChrome(ctx: ExtensionContext, latest?: unknown): void {
+function refreshScrutinyChrome(ctx: ExtensionContext, _latest?: unknown): void {
 	if (!ctx.hasUI) return;
 	const active = activeProgresses();
 	if (active.length) {
-		ctx.ui.setStatus("scrutiny", `scrutiny [${active.length} active]`);
-		ctx.ui.setWidget("scrutiny", renderScrutinyDock(active, ctx.ui.theme), { placement: "belowEditor" });
+		ctx.ui.setStatus("scrutiny", undefined);
+		ctx.ui.setWidget("scrutiny", (_tui, theme) => ({
+			render: (width: number) => renderScrutinyDock(active, theme, width),
+			invalidate() {},
+		}), { placement: "belowEditor" });
 		return;
 	}
-	ctx.ui.setStatus("scrutiny", latest ? scrutinyStatusText(latest) : undefined);
+	ctx.ui.setStatus("scrutiny", undefined);
 	ctx.ui.setWidget("scrutiny", undefined);
+}
+
+function showPendingScrutinyChrome(ctx: ExtensionContext, phase: ScrutinyPendingPhase): void {
+	if (!ctx.hasUI) return;
+	const startedAt = Date.now();
+	ctx.ui.setStatus("scrutiny", undefined);
+	ctx.ui.setWidget("scrutiny", (_tui, theme) => ({
+		render: (width: number) => renderScrutinyPendingDock(phase, theme, width, Date.now() - startedAt),
+		invalidate() {},
+	}), { placement: "belowEditor" });
 }
 
 function clearScrutinyChrome(ctx: ExtensionContext): void {
@@ -40,11 +61,11 @@ function publishScrutinyMessage(pi: ExtensionAPI, message: ScrutinyMessage): voi
 
 async function waitForPiIdle(ctx: ExtensionCommandContext): Promise<void> {
 	if (ctx.isIdle()) return;
-	if (ctx.hasUI) ctx.ui.setStatus("scrutiny", "scrutiny waiting for Pi");
+	showPendingScrutinyChrome(ctx, "waiting");
 	try {
 		await ctx.waitForIdle();
 	} finally {
-		if (ctx.hasUI) ctx.ui.setStatus("scrutiny", undefined);
+		clearScrutinyChrome(ctx);
 	}
 }
 
@@ -63,7 +84,7 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 				try {
-					if (ctx.hasUI) ctx.ui.setStatus("scrutiny", "scrutiny starting");
+					showPendingScrutinyChrome(ctx, "starting");
 					const { result, brief } = await runScrutiny({
 						params,
 						cwd: ctx.cwd,
@@ -117,8 +138,12 @@ export default function (pi: ExtensionAPI) {
 				return publishScrutinyMessage(pi, { customType: "scrutiny-result", content, display: true, details: { kind: "history" } });
 			}
 			if (trimmed === "panels") {
+				if (ctx.mode === "tui") {
+					await showPanelManager(ctx);
+					return;
+				}
 				const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-				return publishScrutinyMessage(pi, { customType: "scrutiny-result", content: panelsText(config), display: true, details: { kind: "panels" } });
+				return publishScrutinyMessage(pi, { customType: "scrutiny-result", content: `${panelsText(config)}\n\n${PANEL_MANAGER_NON_INTERACTIVE}`, display: true, details: { kind: "panels" } });
 			}
 			if (trimmed === "templates") {
 				const config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
@@ -179,15 +204,22 @@ async function editConfigFile(scope: "global" | "project", ctx: ExtensionCommand
 	const existing = await readFile(file, "utf8").catch(() => exampleConfigJson());
 	const edited = await ctx.ui.editor(`Edit ${scope} scrutiny config`, existing);
 	if (edited === undefined) return;
+	let document: unknown;
 	try {
-		JSON.parse(edited);
+		document = JSON.parse(edited);
+		if (!document || typeof document !== "object" || Array.isArray(document)) throw new Error("top level must be a JSON object");
+		parseConfigPatch(document, file);
 	} catch (error) {
-		ctx.ui.notify(`scrutiny config not saved: invalid JSON (${error instanceof Error ? error.message : String(error)})`, "error");
+		ctx.ui.notify(`Scrutiny config was not saved because it is invalid. The previous file is unchanged. Fix the highlighted structure and try again. Detail: ${error instanceof Error ? error.message : String(error)}`, "error");
 		return;
 	}
-	await mkdir(dirname(file), { recursive: true });
-	await writeFile(file, `${edited.trim()}\n`, { encoding: "utf8", mode: 0o600 });
-	ctx.ui.notify(`saved ${file}. next scrutiny run will use it.`, "info");
+	try {
+		if (scope === "global") await saveUserConfigText(edited);
+		else await writeConfigDocumentAtomically(file, document as Record<string, unknown>);
+		ctx.ui.notify(`Saved ${file}. The next Scrutiny run will use it; no run was started.`, "info");
+	} catch (error) {
+		ctx.ui.notify(`Scrutiny config was not saved. The previous file is unchanged. Check permissions or free space and try again. Detail: ${error instanceof Error ? error.message : String(error)}`, "error");
+	}
 }
 
 function configText(config: ScrutinyConfig): string {
@@ -211,8 +243,9 @@ function configText(config: ScrutinyConfig): string {
 		...(config.configurationErrors.length ? ["", "## errors", ...config.configurationErrors.map((message) => `- ${message}`)] : []),
 		"",
 		"## setup",
-		"- `/scrutiny setup` builds a reusable global panel from authenticated Pi models.",
-		"- `/scrutiny config edit` edits global `~/.pi/agent/scrutiny.json` (advanced).",
+		"- `/scrutiny panels` opens the global panel manager (list, create, inspect, edit, rename, default, remove).",
+		"- `/scrutiny setup` opens the create-panel picker directly.",
+		"- `/scrutiny config edit` edits global `~/.pi/agent/scrutiny.json` (advanced escape hatch).",
 		"- `/scrutiny config edit project` edits project `.pi/scrutiny.json` (trusted projects only).",
 	].join("\n");
 }
@@ -228,6 +261,7 @@ function helpText(): string {
 		"",
 		"activation: Scrutiny starts only when you invoke /scrutiny or confirm through its palette. Natural-language requests do not start a run.",
 		"first use: /scrutiny setup saves an authenticated-model lineup globally; setup itself causes no spend and never starts a run.",
+		"panel management: /scrutiny panels lists, inspects, edits, renames, defaults, and removes global panels without starting a run.",
 		"before panel spend: human reviews and confirms exact packet in TUI.",
 		"strategy: replicate means byte-identical prompts and disagreement signal; roles means explicit lenses and coverage/gaps signal.",
 		"completion: result displays and persists. Pi remains idle; no automatic agent turn, synthesis, diagnostics, edits, or implementation begin.",
@@ -237,7 +271,7 @@ function helpText(): string {
 		"/scrutiny",
 		"/scrutiny setup",
 		"/scrutiny models",
-		"/scrutiny panels",
+		"/scrutiny panels  # interactive manager",
 		"/scrutiny templates",
 		"/scrutiny runs",
 		"/scrutiny history",
@@ -261,7 +295,7 @@ function modelsText(config: ScrutinyConfig): string {
 		`tools: ${config.tools.length ? config.tools.join(", ") : "none"}`,
 		`verify checks: ${config.verifyChecks.map((check) => check.name).join(", ") || "none"}`,
 		"",
-		"Run `/scrutiny setup` to build a reusable global panel. `/scrutiny config edit` remains the advanced editor; `PI_SCRUTINY_*` env vars still override files.",
+		"Run `/scrutiny panels` to manage global lineups. `/scrutiny config edit` is the advanced escape hatch; `PI_SCRUTINY_*` env vars still override files.",
 	].join("\n");
 }
 
@@ -272,13 +306,14 @@ function runsText(): string {
 }
 
 function panelsText(config: ScrutinyConfig): string {
-	if (!config.panels.length) return "# scrutiny panels\n\nno panels configured. Run `/scrutiny setup` to choose authenticated models, or `/scrutiny config edit` for advanced configuration.";
+	if (!config.panels.length) return "# scrutiny panels\n\nno panels configured. Run `/scrutiny panels` in Pi TUI to open the manager, or `/scrutiny setup` to create one directly.";
 	return [
 		"# scrutiny panels",
 		"",
 		...config.panels.map((panel) => `- ${panel.name}${panel.name === config.defaultPanel ? " (default)" : ""} · ${panel.members.map(formatPanelMember).join(", ")}`),
 		"",
 		"Panels contain model lineups only. Use `/scrutiny templates` to inspect execution strategy and policy.",
+		"In Pi TUI, `/scrutiny panels` opens the manager for inspect, edit, rename, default, and remove operations. Raw config editing is advanced use.",
 	].join("\n");
 }
 

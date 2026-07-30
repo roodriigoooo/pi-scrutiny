@@ -15,6 +15,7 @@ npm run eval:scout         # unit-level context scout test (mock exec, no subpro
 npm run eval:artifacts     # unit-level artifact memory test (temp cwd, no subprocesses)
 npm run eval:verify        # unit-level objective verify test (fake exec, no subprocesses)
 npm run eval:normalize     # unit-level surface normalization test (fixtures, no subprocesses)
+npm run eval:ui            # active-run progress component and terminal-width snapshots
 ```
 
 exit code is non-zero if any task fails or errors.
@@ -29,7 +30,7 @@ Unit-level contract suite for config v2. It validates named panel/template parsi
 
 ## setup suite (`eval:setup`)
 
-not black-box. drives the real palette/setup components with a fake TUI and authenticated-model registry, plus temporary global config. It covers the unconfigured state, task/template/toggle preservation, no automatic run after save, v2 global save/reload with `0600` permissions, explicit collision handling, no-model login guidance, non-interactive exit, thinking-level capabilities, and verify without a panel. No credentials, model calls, or subprocesses.
+not black-box. drives the real palette/setup/manager components with a fake TUI and authenticated-model registry, plus temporary global config. It covers the unconfigured state, task/template/toggle preservation, no automatic run after save, v2 global save/reload with `0600` permissions, explicit collision/replacement handling, confirmed legacy migration with a private byte-for-byte backup, semantic preservation, rename/default/delete behavior, referenced templates, cancellation, atomic write failure, retry with retained setup selections, no-model login guidance, non-interactive exit, thinking-level capabilities, and verify without a panel. No credentials, model calls, or subprocesses.
 
 ## coverage suite (`eval:coverage`)
 
@@ -50,6 +51,10 @@ not black-box. imports `verify.ts` via the `_ts-resolve` hook and exercises `run
 ## normalize suite (`eval:normalize`)
 
 not black-box. imports `normalize.ts` (type-only relative imports, no resolve hook needed) and exercises `normalizeSurface` with messy panel Markdown fixtures per surface: hypotheses (root causes/evidence/tests/missing), risks (findings grouped by risk class with severity + suggested check), criteria (criteria/edge cases/test cases/migration), repo-map (symbols/call paths/tests/configs + file-path extraction), consult (position/evidence/risks/recommendation), verify (marker), and empty/error responses (undefined). no model keys, no `pi` subprocesses.
+
+## progress UI suite (`eval:ui`)
+
+not black-box. renders the active-run component with a deterministic clock and no ANSI color dependence. It covers waiting, starting, ordered sequential panel rows, partial panel failure, evidence-map work, verify-only checks, mixed verify results, cancellation copy, terminal failure cleanup, long model/role names, and 32/48/80-column terminals. It also asserts that the old mixed indicator vocabulary does not return. No credentials, token spend, or subprocesses.
 
 ## what the smoke suite checks (no model keys needed)
 

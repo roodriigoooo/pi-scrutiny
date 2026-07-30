@@ -2,6 +2,7 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readScrutinyConfig } from "./config.js";
+import { showPanelManager } from "./manager.js";
 import { showPanelSetup } from "./setup.js";
 import { allTemplates, resolveRunPlan, strategyPlainLanguage } from "./templates.js";
 import { inferSurface, SURFACE_HINTS } from "./surfaces.js";
@@ -20,7 +21,7 @@ type PaletteState = {
 	showHelp: boolean;
 };
 
-type PaletteSelection = ScrutinyParams | { action: "setup" } | null;
+type PaletteSelection = ScrutinyParams | { action: "setup" | "manage" } | null;
 
 export async function showScrutinyPalette(ctx: ExtensionCommandContext, initialPrompt = ""): Promise<ScrutinyParams | null> {
 	let config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
@@ -44,16 +45,24 @@ export async function showScrutinyPalette(ctx: ExtensionCommandContext, initialP
 		if (!selected) return null;
 		if (!("action" in selected)) return selected;
 
-		const activeTemplate = templates[state.templateIndex];
-		const setup = await showPanelSetup(ctx, {
-			config,
-			maxMembers: setupMemberLimit(activeTemplate, config),
-		});
-		if (setup) {
-			config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-			templates = allTemplates(config);
-			state.panelIndex = Math.max(0, config.panels.findIndex((panel) => panel.name === setup.panelName));
+		const selectedPanelName = config.panels[state.panelIndex]?.name;
+		let nextPanelName = selectedPanelName;
+		if (selected.action === "setup") {
+			const activeTemplate = templates[state.templateIndex];
+			const setup = await showPanelSetup(ctx, {
+				config,
+				maxMembers: setupMemberLimit(activeTemplate, config),
+			});
+			nextPanelName = setup?.panelName ?? selectedPanelName;
+		} else {
+			await showPanelManager(ctx);
 		}
+		config = readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+		templates = allTemplates(config);
+		const selectedIndex = config.panels.findIndex((panel) => panel.name === nextPanelName);
+		state.panelIndex = selectedIndex >= 0
+			? selectedIndex
+			: Math.max(0, config.panels.findIndex((panel) => panel.name === config.defaultPanel));
 	}
 }
 
@@ -107,6 +116,7 @@ class ScrutinyPalette implements Component, Focusable {
 		if (matchesKey(data, Key.tab) || matchesKey(data, Key.down)) return this.cycleTemplate(1);
 		if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.up)) return this.cycleTemplate(-1);
 		if (matchesKey(data, Key.ctrl("p"))) return this.cyclePanel();
+		if (matchesKey(data, Key.ctrl("m"))) return this.done({ action: "manage" });
 		if (matchesKey(data, Key.ctrl("j"))) return this.cycleJudge();
 		if (matchesKey(data, Key.ctrl("g"))) return this.toggleGit();
 		if (matchesKey(data, Key.ctrl("v"))) return this.toggleVerify();
@@ -179,11 +189,11 @@ class ScrutinyPalette implements Component, Focusable {
 		const help = this.state.showHelp
 			? [
 				plan ? "enter review packet · esc cancel" : this.canSetupPanel() ? "enter configure panel · esc cancel" : "esc cancel",
-				"tab/↓ template · shift-tab/↑ previous template · ctrl+p panel",
+				"tab/↓ template · shift-tab/↑ previous template · ctrl+p choose panel · ctrl+m manage panels",
 				"ctrl+j evidence map · ctrl+g git diff · ctrl+v verify",
 				"template and panel selections are independent",
 			]
-			: [plan ? "enter review packet · esc cancel · tab template · ^p panel · ^j map · ^g git · ^v verify · ? help" : this.canSetupPanel() ? "enter setup · esc cancel · tab template · ^j map · ^g git · ^v verify · ? help" : "esc cancel · tab template · ? help"];
+			: [plan ? "enter review packet · esc cancel · tab template · ^p choose · ^m manage · ^j map · ^g git · ^v verify · ? help" : this.canSetupPanel() ? "enter setup · esc cancel · tab template · ^m manage · ^j map · ^g git · ^v verify · ? help" : "esc cancel · tab template · ^m manage · ? help"];
 		for (const line of help) lines.push(frameLine(dim(line), w, this.theme));
 		lines.push(bottomBorder(w, this.theme));
 		return lines;
