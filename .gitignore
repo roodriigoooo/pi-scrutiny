@@ -1,5 +1,7 @@
 node_modules/
 .pi/
 eval/out/
+/lab/
+.scrutiny-lab/
 PLAN.md
 .DS_Store

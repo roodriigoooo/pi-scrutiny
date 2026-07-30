@@ -5,6 +5,22 @@
 
 Multi-model deliberation and objective repository verification for the Pi coding agent.
 
+## Install
+
+From npm:
+
+```bash
+pi install npm:@roodriigoooo/pi-scrutiny
+```
+
+Directly from GitHub:
+
+```bash
+pi install git:github.com/roodriigoooo/pi-scrutiny
+```
+
+Add `--local` to either command to install only for the current project.
+
 ## Why this exists
 
 Scrutiny collects independent evidence from multiple models, then leaves the decision to objective repo checks and human review. It never fuses patches or treats an LLM judge as a correctness arbiter.
