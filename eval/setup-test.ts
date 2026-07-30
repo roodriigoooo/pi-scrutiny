@@ -2,9 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { PanelNameCollisionError, readScrutinyConfig, saveUserPanel, userConfigPath } from "../extensions/scrutiny/config.ts";
+import {
+	PanelNameCollisionError,
+	PanelReferencedError,
+	readScrutinyConfig,
+	removeUserPanel,
+	renameUserPanel,
+	saveUserPanel,
+	setDefaultUserPanel,
+	userConfigPath,
+} from "../extensions/scrutiny/config.ts";
+import { showPanelManager } from "../extensions/scrutiny/manager.ts";
 import { showScrutinyPalette } from "../extensions/scrutiny/palette.ts";
 import { NO_AUTHENTICATED_MODELS, PANEL_SETUP_NON_INTERACTIVE, showPanelSetup, supportedThinkingLevels } from "../extensions/scrutiny/setup.ts";
+import { ConfigurationError } from "../extensions/scrutiny/templates.ts";
 
 const failures: Array<{ name: string; error: string }> = [];
 let checks = 0;
@@ -22,6 +33,15 @@ async function check(name: string, run: () => void | Promise<void>): Promise<voi
 
 function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
+}
+
+function stableJson(value: unknown): string {
+	const canonical = (item: unknown): unknown => {
+		if (Array.isArray(item)) return item.map(canonical);
+		if (!item || typeof item !== "object") return item;
+		return Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right)).map(([key, nested]) => [key, canonical(nested)]));
+	};
+	return JSON.stringify(canonical(value));
 }
 
 async function rejects(run: () => Promise<unknown>, errorType: new (...args: any[]) => Error): Promise<void> {
@@ -71,6 +91,7 @@ function makeContext(input: {
 	const baseUi = {
 		theme,
 		custom: async () => { throw new Error("unexpected custom UI"); },
+		select: async () => undefined,
 		input: async () => undefined,
 		confirm: async () => false,
 		notify: () => undefined,
@@ -110,7 +131,7 @@ async function withAgentDir(run: (paths: { root: string; agent: string; cwd: str
 }
 
 async function main(): Promise<void> {
-	process.stdout.write("scrutiny setup · 7 checks\n");
+	process.stdout.write("scrutiny setup and panel management · 14 checks\n");
 	const scrutinyEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("PI_SCRUTINY_")));
 	for (const key of Object.keys(scrutinyEnv)) delete process.env[key];
 
@@ -131,12 +152,224 @@ async function main(): Promise<void> {
 			assert(readScrutinyConfig({ cwd }).panels[0]?.members[0]?.model === "provider-b/model-two", "confirmed overwrite path failed");
 		}));
 
+		await check("setup explicitly migrates legacy settings with a lossless backup before saving", () => withAgentDir(async ({ agent, cwd }) => {
+			fs.mkdirSync(agent, { recursive: true });
+			const legacy = `${JSON.stringify({
+				panel: [{ model: "provider-old/default", thinking: "low" }],
+				panels: {
+					"old-risk": {
+						surface: "risks",
+						members: [
+							{ model: "provider-old/api", lens: "api compatibility", thinking: "medium" },
+							{ model: "provider-old/failure", lens: "failure semantics", thinking: "off" },
+						],
+						judgeMode: "off",
+						includeGitDiff: false,
+						verify: true,
+					},
+				},
+				judge: "provider-old/judge",
+				maxPanelModels: 4,
+				verifyChecks: [{ name: "custom-check", command: "npm", args: ["run", "custom"], timeoutMs: 9000 }],
+			}, null, 2)}\n`;
+			fs.writeFileSync(userConfigPath(), legacy, { mode: 0o600 });
+			const before = readScrutinyConfig({ cwd });
+			const notifications: string[] = [];
+			let migrationConfirmations = 0;
+			const ctx = makeContext({
+				cwd,
+				models: [model],
+				ui: {
+					custom: async (factory: any) => {
+						let result: unknown;
+						const component = await factory(tui, theme, {}, (value: unknown) => { result = value; });
+						component.handleInput(KEY.space);
+						component.handleInput(KEY.ctrlS);
+						return result;
+					},
+					input: async () => "new-panel",
+					confirm: async (title: string) => {
+						if (title.includes("Upgrade")) migrationConfirmations += 1;
+						return true;
+					},
+					notify: (message: string) => notifications.push(message),
+				},
+			});
+			const result = await showPanelSetup(ctx);
+			assert(result?.panelName === "new-panel", "panel was not saved after migration");
+			assert(migrationConfirmations === 1, "legacy migration was not explicit");
+			const migrated = JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+			assert(migrated.schemaVersion === 2, "legacy file was not migrated");
+			const backups = fs.readdirSync(agent).filter((name) => name.startsWith("scrutiny.json.legacy-backup-"));
+			assert(backups.length === 1, "private legacy backup was not created");
+			assert(fs.readFileSync(path.join(agent, backups[0]!), "utf8") === legacy, "legacy backup is not byte-for-byte");
+			assert((fs.statSync(path.join(agent, backups[0]!)).mode & 0o777) === 0o600, "legacy backup permissions are not private");
+			const after = readScrutinyConfig({ cwd });
+			assert(after.defaultPanel === before.defaultPanel, "effective default changed during migration");
+			assert(JSON.stringify(after.panels.filter((panel) => panel.name !== "new-panel")) === JSON.stringify(before.panels), "existing effective panels changed");
+			assert(stableJson(after.templates) === stableJson(before.templates), "effective templates, lenses, or policies changed");
+			assert(after.judge === before.judge && JSON.stringify(after.verifyChecks) === JSON.stringify(before.verifyChecks), "effective global policies changed");
+			assert(notifications.some((message) => message.includes("original backed up") && message.includes("Continuing with the selected lineup")), "migration outcome and next action were not explained");
+		}));
+
+		await check("panel mutations preserve references, defaults, collisions, and deletion safety", () => withAgentDir(async ({ agent, cwd }) => {
+			fs.mkdirSync(agent, { recursive: true });
+			fs.writeFileSync(userConfigPath(), `${JSON.stringify({
+				schemaVersion: 2,
+				defaultPanel: "alpha",
+				panels: {
+					alpha: { members: [{ model: "provider/a", thinking: "low" }] },
+					beta: { members: [{ model: "provider/b", thinking: "off" }] },
+				},
+				templates: {
+					"release-risk": {
+						surface: "risks",
+						strategy: "roles",
+						panel: "alpha",
+						lenses: ["api compatibility"],
+						judgeMode: "off",
+						includeGitDiff: true,
+						verify: true,
+					},
+				},
+			}, null, 2)}\n`, { mode: 0o600 });
+			await rejects(() => renameUserPanel("alpha", "gamma"), PanelReferencedError);
+			await rejects(() => renameUserPanel("alpha", "beta", { updateTemplateReferences: true }), PanelNameCollisionError);
+			await renameUserPanel("alpha", "gamma", { updateTemplateReferences: true });
+			let document = JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+			assert(document.defaultPanel === "gamma", "default did not follow renamed panel");
+			assert(document.templates["release-risk"].panel === "gamma", "template reference did not follow renamed panel");
+			assert(!document.panels.alpha && document.panels.gamma, "panel rename was not atomic");
+			await setDefaultUserPanel("beta");
+			assert(readScrutinyConfig({ cwd }).defaultPanel === "beta", "default panel change failed");
+			await rejects(() => removeUserPanel("gamma"), PanelReferencedError);
+			await removeUserPanel("gamma", { removeReferencedTemplates: true });
+			document = JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+			assert(!document.panels.gamma && !document.templates["release-risk"], "confirmed referenced deletion left broken config");
+			await removeUserPanel("beta");
+			document = JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+			assert(Object.keys(document.panels).length === 0 && !("defaultPanel" in document), "removing final default left a broken reference");
+		}));
+
+		await check("canceling the panel manager leaves the config byte-for-byte unchanged", () => withAgentDir(async ({ cwd }) => {
+			await saveUserPanel({ name: "balanced", members: [{ model: "provider/a", thinking: "off" }] });
+			const before = fs.readFileSync(userConfigPath(), "utf8");
+			const ctx = makeContext({ cwd, ui: { select: async () => undefined } });
+			await showPanelManager(ctx);
+			assert(fs.readFileSync(userConfigPath(), "utf8") === before, "cancelled manager rewrote config");
+		}));
+
+		await check("panel manager changes the default through an explicit no-spend TUI action", () => withAgentDir(async ({ cwd }) => {
+			await saveUserPanel({ name: "alpha", members: [{ model: "provider/a", thinking: "off" }] });
+			await saveUserPanel({ name: "beta", members: [{ model: "provider/b", thinking: "low" }] });
+			let selects = 0;
+			let confirmations = 0;
+			const ctx = makeContext({
+				cwd,
+				ui: {
+					select: async (_title: string, options: string[]) => {
+						selects += 1;
+						if (selects === 1) return options.find((option) => option.includes("beta"));
+						if (selects === 2) return "Set as default";
+						return undefined;
+					},
+					confirm: async () => {
+						confirmations += 1;
+						return true;
+					},
+				},
+			});
+			await showPanelManager(ctx);
+			assert(confirmations === 1, "default consequence was not confirmed");
+			assert(readScrutinyConfig({ cwd }).defaultPanel === "beta", "manager did not change the default");
+		}));
+
+		await check("atomic write failure preserves the previous config", () => withAgentDir(async ({ agent, cwd }) => {
+			await saveUserPanel({ name: "alpha", members: [{ model: "provider/a", thinking: "off" }] });
+			await saveUserPanel({ name: "beta", members: [{ model: "provider/b", thinking: "low" }] });
+			const before = fs.readFileSync(userConfigPath(), "utf8");
+			fs.chmodSync(agent, 0o500);
+			try {
+				await rejects(() => setDefaultUserPanel("beta"), ConfigurationError);
+			} finally {
+				fs.chmodSync(agent, 0o700);
+			}
+			assert(fs.readFileSync(userConfigPath(), "utf8") === before, "failed atomic write changed prior config");
+			assert(readScrutinyConfig({ cwd }).defaultPanel === "alpha", "failed write changed effective default");
+		}));
+
+		await check("recoverable save failure retries without losing lineup or thinking selection", () => withAgentDir(async ({ agent, cwd }) => {
+			fs.mkdirSync(agent, { recursive: true });
+			let retries = 0;
+			const ctx = makeContext({
+				cwd,
+				models: [model],
+				ui: {
+					custom: async (factory: any) => {
+						let result: unknown;
+						const component = await factory(tui, theme, {}, (value: unknown) => { result = value; });
+						component.handleInput(KEY.space);
+						component.handleInput(KEY.right);
+						component.handleInput(KEY.ctrlS);
+						fs.chmodSync(agent, 0o500);
+						return result;
+					},
+					input: async () => "retry-panel",
+					confirm: async (title: string) => {
+						if (!title.includes("Try saving")) return false;
+						retries += 1;
+						fs.chmodSync(agent, 0o700);
+						return true;
+					},
+				},
+			});
+			try {
+				const result = await showPanelSetup(ctx);
+				assert(result?.panelName === "retry-panel" && retries === 1, "recoverable failure did not retry");
+				const panel = readScrutinyConfig({ cwd }).panels.find((item) => item.name === "retry-panel");
+				assert(panel?.members[0]?.model === "provider-a/model-one" && panel.members[0].thinking === "minimal", "retry lost selected lineup or thinking");
+			} finally {
+				fs.chmodSync(agent, 0o700);
+			}
+		}));
+
 		await check("picker thinking controls follow model capabilities", () => {
 			assert(supportedThinkingLevels({ reasoning: false }).join(",") === "off", "non-reasoning model should expose off only");
 			const levels = supportedThinkingLevels({ reasoning: true, thinkingLevelMap: { off: null, low: null, xhigh: "max" } });
 			assert(!levels.includes("off") && !levels.includes("low"), "unsupported levels were exposed");
 			assert(levels.includes("minimal") && levels.includes("xhigh"), "supported levels were hidden");
 		});
+
+		await check("editing preserves unavailable members and an implicit thinking default", () => withAgentDir(async ({ cwd }) => {
+			const initial = {
+				name: "mixed",
+				members: [
+					{ model: "provider-a/model-one" },
+					{ model: "provider-old/unavailable", thinking: "high" as const },
+				],
+			};
+			await saveUserPanel(initial);
+			let rendered = "";
+			const ctx = makeContext({
+				cwd,
+				models: [],
+				ui: {
+					custom: async (factory: any) => {
+						let result: unknown;
+						const component = await factory(tui, theme, {}, (value: unknown) => { result = value; });
+						rendered = component.render(110).join("\n");
+						component.handleInput(KEY.ctrlS);
+						return result;
+					},
+				},
+			});
+			const result = await showPanelSetup(ctx, { initialPanel: initial });
+			assert(result?.panelName === "mixed", "edit did not save");
+			assert(rendered.includes("2/4") && rendered.includes("think:default") && rendered.includes("provider-old/unavailable"), "existing lineup was not preselected legibly");
+			const document = JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+			assert(!("thinking" in document.panels.mixed.members[0]), "implicit thinking default was silently changed");
+			assert(document.panels.mixed.members[1].thinking === "high", "unavailable member thinking was lost");
+		}));
 
 		await check("unconfigured palette preserves task, template, and toggles across setup", () => withAgentDir(async ({ cwd }) => {
 			let customCalls = 0;

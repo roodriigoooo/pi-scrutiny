@@ -55,6 +55,13 @@ export type PanelSpec = {
 	endedAt?: number;
 };
 
+export type VerifyProgressSpec = {
+	name: string;
+	status: "pending" | "running" | "pass" | "fail" | "error";
+	startedAt?: number;
+	endedAt?: number;
+};
+
 export type PanelResponse = {
 	model: string;
 	role: string;
@@ -88,6 +95,8 @@ export type ScrutinyRunProgress = {
 	packetPath?: string;
 	panel: PanelSpec[];
 	judge?: PanelSpec;
+	verifyChecks?: VerifyProgressSpec[];
+	phase?: "panel" | "evidence-map" | "verify" | "complete";
 	startedAt: number;
 	updatedAt: number;
 	status: "running" | "ok" | "error";

@@ -55,6 +55,7 @@ type RunScrutinyInput = {
 
 const PANEL_EXCERPT_CHARS = 2_400;
 const PROGRESS_HEARTBEAT_MS = 1_000;
+type CheckProgressEvent = Parameters<NonNullable<Parameters<typeof runVerifyChecks>[0]["onCheckProgress"]>>[0];
 
 let activeRunId: string | undefined;
 
@@ -116,14 +117,23 @@ export async function runScrutiny(input: RunScrutinyInput): Promise<{ result: Sc
 	}
 
 	safeMkdir(runDir);
-	if (isVerifyPlan(plan)) {
-		const out = await runVerifyOnly({ runId, cwd: input.cwd, exec: input.exec, config, runDir, startedAt, signal: input.signal, onProgress: input.onProgress, params: input.params, plan });
+	try {
+		if (isVerifyPlan(plan)) {
+			return await runVerifyOnly({ runId, cwd: input.cwd, exec: input.exec, config, runDir, startedAt, signal: input.signal, onProgress: input.onProgress, params: input.params, plan });
+		}
+		return await runDeliberation({ input, runId, startedAt, config, runDir, plan });
+	} catch (error) {
+		recordRunEnd(runId, {
+			status: "error",
+			endedAt: Date.now(),
+			error: error instanceof Error && error.message === SCRUTINY_PACKET_PREVIEW_CANCELLED
+				? "cancelled before panel spend"
+				: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	} finally {
 		releaseRunLock(runId);
-		return out;
 	}
-
-	return runDeliberation({ input, runId, startedAt, config, runDir, plan })
-		.finally(() => releaseRunLock(runId));
 }
 
 async function runDeliberation(input: {
@@ -182,6 +192,8 @@ async function runDeliberation(input: {
 		packetPath,
 		panel: panel.map((item) => ({ model: item.model, role: item.role, thinking: item.thinking, status: "pending" })),
 		judge: runJudge && judgeModel ? { model: judgeModel, role: "trade-off explainer", status: "pending" } : undefined,
+		verifyChecks: runVerify ? config.verifyChecks.map((check) => ({ name: check.name, status: "pending" })) : undefined,
+		phase: "panel",
 		startedAt,
 		updatedAt: Date.now(),
 		status: "running",
@@ -227,6 +239,8 @@ async function runDeliberation(input: {
 	const mush = detectMush(okResponses);
 	if (mush) return finishPanelFailure({ ...input, surface, packetPath, packet, scout, responses, failedModels, progress, message: `panel outputs unusable: ${mush}` });
 
+	progress = { ...progress, phase: "evidence-map", updatedAt: Date.now(), message: "building evidence map" };
+	emit(input.input, progress);
 	let judge: PanelResponse | undefined;
 	let analysis: ScrutinyAnalysis = buildDeterministicAnalysis({
 		responses,
@@ -259,7 +273,7 @@ async function runDeliberation(input: {
 
 	let verify: VerifyReport | undefined;
 	if (runVerify) {
-		progress = { ...progress, message: "running objective verify checks", updatedAt: Date.now() };
+		progress = { ...progress, phase: "verify", message: "running objective verify checks", updatedAt: Date.now() };
 		emit(input.input, progress);
 		verify = await withProgressHeartbeat(
 			() => runVerifyChecks({
@@ -268,7 +282,8 @@ async function runDeliberation(input: {
 				config,
 				signal: input.input.signal,
 				onCheckProgress: (event) => {
-					progress = { ...progress, message: verifyProgressMessage(event), updatedAt: Date.now() };
+					progress = updateVerifyCheck(progress, event);
+					progress.message = verifyProgressMessage(event);
 					emit(input.input, progress);
 				},
 			}),
@@ -301,7 +316,7 @@ async function runDeliberation(input: {
 		durationMs: endedAt - startedAt,
 	};
 	await writeRunResult({ cwd: input.input.cwd, runDir, result, prompt: input.input.params.prompt });
-	progress = { ...progress, status: "ok", updatedAt: endedAt, message: `done in ${formatDuration(result.durationMs)}` };
+	progress = { ...progress, phase: "complete", status: "ok", updatedAt: endedAt, message: `done in ${formatDuration(result.durationMs)}` };
 	emit(input.input, progress);
 	recordRunEnd(runId, { status: "ok", endedAt });
 	return {
@@ -353,7 +368,7 @@ async function finishPanelFailure(input: {
 		durationMs: endedAt - input.startedAt,
 	};
 	await writeRunResult({ cwd: input.input.cwd, runDir: input.runDir, result, prompt: input.input.params.prompt });
-	const progress = { ...input.progress, status: "error" as const, updatedAt: endedAt, message: input.message };
+	const progress = { ...input.progress, phase: "complete" as const, status: "error" as const, updatedAt: endedAt, message: input.message };
 	emit(input.input, progress);
 	recordRunEnd(input.runId, { status: "error", endedAt, error: input.message });
 	return {
@@ -388,6 +403,8 @@ async function runVerifyOnly(input: {
 		surface: "verify",
 		template: plan.template.name,
 		panel: [],
+		verifyChecks: config.verifyChecks.map((check) => ({ name: check.name, status: "pending" })),
+		phase: "verify",
 		startedAt,
 		updatedAt: Date.now(),
 		status: "running",
@@ -401,7 +418,8 @@ async function runVerifyOnly(input: {
 			config,
 			signal,
 			onCheckProgress: (event) => {
-				progress = { ...progress, message: verifyProgressMessage(event), updatedAt: Date.now() };
+				progress = updateVerifyCheck(progress, event);
+				progress.message = verifyProgressMessage(event);
 				emit({ onProgress }, progress);
 			},
 		}),
@@ -424,7 +442,7 @@ async function runVerifyOnly(input: {
 	};
 	await writeRunResult({ cwd, runDir, result, prompt: params.prompt });
 	const verdict = classifyVerifyRun(verify);
-	progress = { ...progress, status: "ok", updatedAt: endedAt, message: `verify: ${verdict.summary}${verdict.verifyFailed ? " · checks failed" : ""}` };
+	progress = { ...progress, phase: "complete", status: "ok", updatedAt: endedAt, message: `verify: ${verdict.summary}${verdict.verifyFailed ? " · checks failed" : ""}` };
 	emit({ onProgress }, progress);
 	recordRunEnd(runId, { status: "ok", endedAt });
 	return { result, brief: formatVerifyBrief({ verify, budgetLine: verifyBudgetLine(verify) }) };
@@ -466,6 +484,22 @@ function emit(input: { onProgress?: (progress: ScrutinyRunProgress) => void }, p
 
 function updatePanel(progress: ScrutinyRunProgress, index: number, patch: Partial<ScrutinyRunProgress["panel"][number]>): ScrutinyRunProgress {
 	return { ...progress, updatedAt: Date.now(), panel: progress.panel.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) };
+}
+
+function updateVerifyCheck(progress: ScrutinyRunProgress, event: CheckProgressEvent): ScrutinyRunProgress {
+	const now = Date.now();
+	return {
+		...progress,
+		updatedAt: now,
+		verifyChecks: progress.verifyChecks?.map((item, index) => index === event.index
+			? {
+				...item,
+				status: event.status,
+				startedAt: event.status === "running" ? item.startedAt ?? now : item.startedAt,
+				endedAt: event.status === "running" ? undefined : now,
+			}
+			: item),
+	};
 }
 
 function responsesSoFar(progress: ScrutinyRunProgress): { ready: number; failed: number; total: number } {
@@ -538,4 +572,3 @@ async function withProgressHeartbeat<T>(work: () => Promise<T>, tick: () => void
 		clearInterval(timer);
 	}
 }
-

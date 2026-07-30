@@ -69,18 +69,23 @@ Before any panel spend, the TUI shows the exact task packet and requires confirm
 
 ## Configure
 
-Start with interactive panel setup:
+Use the interactive panel manager for normal configuration:
 
 ```text
-/scrutiny setup                 # choose authenticated models and save a global panel
-/scrutiny config edit           # advanced: edit global ~/.pi/agent/scrutiny.json
-/scrutiny config edit project   # advanced: edit project .pi/scrutiny.json (trusted projects only)
+/scrutiny panels                # list, create, inspect, edit, rename, default, or remove global panels
+/scrutiny setup                 # shortcut straight to create-panel setup
 /scrutiny config                # sources, active panels/templates, diagnostics
+/scrutiny config edit           # advanced escape hatch: edit global ~/.pi/agent/scrutiny.json
+/scrutiny config edit project   # advanced escape hatch: edit trusted project .pi/scrutiny.json
 ```
 
-Setup lists only models available through authenticated Pi providers, supports provider/model search and per-member thinking levels, asks for a panel name, and saves to `~/.pi/agent/scrutiny.json`. It never starts a run or spends model tokens. Existing panel names require explicit replacement confirmation.
+The manager is a settings-only surface: none of its actions starts a Scrutiny run or spends model tokens. It makes common consequences explicit before writing. Renames update referencing user templates after confirmation; removals cannot leave those templates broken and require confirmation before deleting them. Default changes and destructive operations are also confirmed.
+
+Create and edit use the authenticated-model picker with provider/model search, ordered lineups, and per-member thinking levels. Configured models that are temporarily unavailable remain visible while editing so cancellation cannot silently discard them. Existing panel names require explicit replacement confirmation.
 
 Opening `/scrutiny` without a usable deliberation panel offers the same setup flow in place. Prompt, template, panel-independent toggles, and surface selection remain intact; after save, Scrutiny returns to the palette for packet/spend review and final run confirmation.
+
+The palette also exposes the manager with `Ctrl+M`; returning from it preserves the task and run selections. Every manager update is written with an atomic replace. Cancellation and write failure leave the previous config untouched.
 
 If no models are available, use Pi's `/login` and `/model` flows first. In non-interactive mode, run setup later in a TUI or edit global config manually.
 
@@ -136,22 +141,23 @@ Invalid configurations are rejected before scouting, packet preview, runner lock
 
 ### Migrating legacy configuration
 
-No config file is rewritten automatically. A config without `schemaVersion: 2` is read through a temporary compatibility parser and reports a migration diagnostic with a v2 example.
+A config without `schemaVersion: 2` remains readable through the compatibility parser. When setup or the panel manager needs to change that file, Scrutiny explains why an upgrade is needed and asks for confirmation in the current flow. It then writes a private, byte-for-byte legacy backup and atomically replaces the config only after proving that the effective v2 settings are equivalent. No manual JSON migration is required.
 
 - A legacy top-level `panel` becomes the synthetic `default` panel.
 - A legacy saved bundled panel becomes a same-named v2 panel plus a same-named template whose default panel points to it.
 - Legacy roles member lenses become the template’s effective lenses, including the historical fallback lenses.
 - Legacy replicate member lenses are discarded because replicate execution never used them.
+- Existing effective defaults, common policies, judge settings, verification checks, panels, and generated templates remain equivalent.
 
-The legacy raw keys remain readable temporarily for migration, but public commands and documentation use only panels and templates.
+Declining migration changes nothing. A failed backup or atomic write also leaves the original file untouched, reports what happened and why the panel change cannot continue, and offers a retry without discarding the selected lineup. Raw editing remains available for advanced or unusual configuration, not as the standard recovery path.
 
 ## Use
 
 ```text
 /scrutiny                                    # open palette; offers setup when needed
-/scrutiny setup                              # create or update a reusable global panel
+/scrutiny setup                              # create a reusable global panel directly
 /scrutiny models                             # current default lineup
-/scrutiny panels                             # model lineups only
+/scrutiny panels                             # interactive global panel manager
 /scrutiny templates                          # strategy and policies
 /scrutiny runs                               # recent run artifacts
 /scrutiny history                            # searchable artifact history
@@ -168,6 +174,8 @@ In the palette, `Tab` cycles templates and `Ctrl+P` cycles panels independently.
 ## Runtime and artifacts
 
 Panelists run sequentially, one at a time, in `pi` subprocesses with tools disabled by default. The engine records template, panel, strategy, assignments, and unassigned lenses in `result.json` and per-surface artifacts.
+
+During a run, one below-editor progress component shows the current phase, elapsed time, cancellation key, and stable sequential rows. Panelists, evidence-map work, and objective checks share the textual state labels `pending`, `running`, `ready`, and `failed`; completed check rows also retain their `pass`, `fail`, or `error` outcome as detail. Color reinforces those words but never carries state by itself. Long model and role names truncate to the current terminal width. The status footer stays clear while this component is active, and completion, cancellation, or run failure removes the transient component before the review result is shown.
 
 Runs persist under `.pi/scrutiny/<run-id>/`:
 
@@ -195,6 +203,7 @@ npm run eval:scout
 npm run eval:artifacts
 npm run eval:verify
 npm run eval:normalize
+npm run eval:ui
 npm run pack:dry
 ```
 

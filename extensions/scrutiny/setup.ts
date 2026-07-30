@@ -1,7 +1,13 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { fuzzyFilter, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { PanelNameCollisionError, readScrutinyConfig, saveUserPanel } from "./config.js";
+import {
+	LegacyConfigMigrationRequiredError,
+	migrateUserConfig,
+	PanelNameCollisionError,
+	readScrutinyConfig,
+	saveUserPanel,
+} from "./config.js";
 import type { PanelDefinition, PanelMember, ScrutinyConfig, ThinkingLevel } from "./types.js";
 
 export const PANEL_SETUP_NON_INTERACTIVE = "Panel setup requires Pi TUI. Run `/scrutiny setup` in an interactive Pi session, or edit `~/.pi/agent/scrutiny.json`.";
@@ -18,7 +24,7 @@ type SetupModel = {
 };
 
 type SelectedModel = {
-	thinking: ThinkingLevel;
+	thinking?: ThinkingLevel;
 	order: number;
 };
 
@@ -29,7 +35,7 @@ export type PanelSetupResult = {
 
 export async function showPanelSetup(
 	ctx: ExtensionCommandContext,
-	options: { config?: ScrutinyConfig; maxMembers?: number } = {},
+	options: { config?: ScrutinyConfig; maxMembers?: number; initialPanel?: PanelDefinition } = {},
 ): Promise<PanelSetupResult | null> {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify(PANEL_SETUP_NON_INTERACTIVE, "warning");
@@ -44,24 +50,55 @@ export async function showPanelSetup(
 		ctx.ui.notify(`Unable to load authenticated models: ${error instanceof Error ? error.message : String(error)}`, "error");
 		return null;
 	}
-	if (!available.length) {
+	if (!available.length && !options.initialPanel) {
 		ctx.ui.notify(NO_AUTHENTICATED_MODELS, "warning");
 		return null;
 	}
+	if (!available.length && options.initialPanel) {
+		ctx.ui.notify("No authenticated models are currently available. Existing configured members remain editable; use `/login` before adding another model.", "warning");
+	}
 
 	const config = options.config ?? readScrutinyConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-	const maxMembers = Math.max(1, Math.min(options.maxMembers ?? config.maxPanelModels, config.maxPanelModels));
+	const configuredLimit = options.initialPanel
+		? Math.max(config.maxPanelModels, options.initialPanel.members.length)
+		: config.maxPanelModels;
+	const maxMembers = Math.max(
+		1,
+		options.initialPanel?.members.length ?? 0,
+		Math.min(options.maxMembers ?? configuredLimit, configuredLimit),
+	);
 	const choices = available
 		.map(toSetupModel)
 		.sort((left, right) => left.label.localeCompare(right.label));
+	for (const member of options.initialPanel?.members ?? []) {
+		const configured = choices.find((choice) => choice.key === member.model);
+		if (configured) {
+			if (member.thinking && !configured.thinkingLevels.includes(member.thinking)) configured.thinkingLevels.unshift(member.thinking);
+			continue;
+		}
+		choices.push({
+			key: member.model,
+			label: member.model,
+			searchText: `${member.model} configured unavailable`,
+			name: "Configured model (not currently authenticated)",
+			thinkingLevels: thinkingLevelsWithCurrent(member.thinking),
+		});
+	}
 	const members = await ctx.ui.custom<PanelMember[] | null>(
-		(tui, theme, _kb, done) => new PanelSetupPicker(tui, theme, choices, maxMembers, done),
+		(tui, theme, _kb, done) => new PanelSetupPicker(tui, theme, choices, maxMembers, done, options.initialPanel?.members),
 		{
 			overlay: true,
 			overlayOptions: { anchor: "center", width: "74%", minWidth: 68, maxHeight: "84%", margin: 1 },
 		},
 	);
 	if (!members?.length) return null;
+
+	if (options.initialPanel) {
+		const saved = await persistPanel(ctx, { name: options.initialPanel.name, members }, true);
+		if (!saved) return null;
+		ctx.ui.notify(`Updated global panel "${options.initialPanel.name}" in ${saved}. No Scrutiny run was started.`, "info");
+		return { panelName: options.initialPanel.name, file: saved };
+	}
 
 	while (true) {
 		const entered = await ctx.ui.input("Name global scrutiny panel", "e.g. balanced");
@@ -72,29 +109,14 @@ export async function showPanelSetup(
 			continue;
 		}
 		const panel: PanelDefinition = { name: panelName, members };
-		try {
-			const file = await saveUserPanel(panel);
+		const saved = await persistPanel(ctx, panel, false);
+		if (saved === "choose-another-name") continue;
+		if (saved) {
+			const file = saved;
 			ctx.ui.notify(`Saved global panel "${panelName}" to ${file}. Review task packet before running.`, "info");
 			return { panelName, file };
-		} catch (error) {
-			if (error instanceof PanelNameCollisionError) {
-				const replace = await ctx.ui.confirm(
-					"Replace global scrutiny panel?",
-					`Panel "${panelName}" already exists in ~/.pi/agent/scrutiny.json. Replace its model lineup?`,
-				);
-				if (!replace) continue;
-				try {
-					const file = await saveUserPanel(panel, { overwrite: true });
-					ctx.ui.notify(`Replaced global panel "${panelName}" in ${file}. Review task packet before running.`, "info");
-					return { panelName, file };
-				} catch (saveError) {
-					ctx.ui.notify(`Panel not saved: ${saveError instanceof Error ? saveError.message : String(saveError)}`, "error");
-					return null;
-				}
-			}
-			ctx.ui.notify(`Panel not saved: ${error instanceof Error ? error.message : String(error)}`, "error");
-			return null;
 		}
+		return null;
 	}
 }
 
@@ -148,6 +170,7 @@ class PanelSetupPicker implements Component, Focusable {
 		models: SetupModel[],
 		maxMembers: number,
 		done: (value: PanelMember[] | null) => void,
+		initialMembers: PanelMember[] = [],
 	) {
 		this.tui = tui;
 		this.theme = theme;
@@ -155,6 +178,11 @@ class PanelSetupPicker implements Component, Focusable {
 		this.maxMembers = maxMembers;
 		this.done = done;
 		this.filtered = models;
+		for (const [order, member] of initialMembers.slice(0, maxMembers).entries()) {
+			const model = models.find((candidate) => candidate.key === member.model);
+			if (model) this.selected.set(model.key, { thinking: member.thinking, order });
+		}
+		this.nextOrder = this.selected.size;
 	}
 
 	handleInput(data: string): void {
@@ -223,7 +251,7 @@ class PanelSetupPicker implements Component, Focusable {
 				const prefix = active ? accent(">") : " ";
 				const box = selected ? success("[x]") : dim("[ ]");
 				const order = selected ? `${this.memberNumber(model.key)}.` : "  ";
-				const thinking = selected ? accent(`think:${selected.thinking}`) : dim("not selected");
+				const thinking = selected ? accent(`think:${selected.thinking ?? "default"}`) : dim("not selected");
 				lines.push(frameLine(`${prefix} ${box} ${order} ${model.label}  ${thinking}`, w, this.theme));
 			}
 			const current = this.filtered[this.selectedIndex];
@@ -273,6 +301,11 @@ class PanelSetupPicker implements Component, Focusable {
 			this.message = "Select model before changing its thinking level.";
 			return;
 		}
+		if (selected.thinking === undefined) {
+			selected.thinking = delta > 0 ? model.thinkingLevels[0] : model.thinkingLevels.at(-1);
+			this.message = "";
+			return;
+		}
 		const current = model.thinkingLevels.indexOf(selected.thinking);
 		selected.thinking = model.thinkingLevels[(current + delta + model.thinkingLevels.length) % model.thinkingLevels.length]!;
 		this.message = "";
@@ -281,7 +314,10 @@ class PanelSetupPicker implements Component, Focusable {
 	private members(): PanelMember[] {
 		return [...this.selected.entries()]
 			.sort((left, right) => left[1].order - right[1].order)
-			.map(([model, selection]) => ({ model, thinking: selection.thinking }));
+			.map(([model, selection]) => ({
+				model,
+				...(selection.thinking === undefined ? {} : { thinking: selection.thinking }),
+			}));
 	}
 
 	private memberNumber(key: string): number {
@@ -296,6 +332,70 @@ class PanelSetupPicker implements Component, Focusable {
 function visibleWindow<T>(items: T[], selected: number, size: number): Array<{ row: T; index: number }> {
 	const start = Math.max(0, Math.min(selected - Math.floor(size / 2), items.length - size));
 	return items.slice(start, start + size).map((row, offset) => ({ row, index: start + offset }));
+}
+
+async function persistPanel(
+	ctx: ExtensionCommandContext,
+	panel: PanelDefinition,
+	overwrite: boolean,
+): Promise<string | "choose-another-name" | null> {
+	let replace = overwrite;
+	let migrationApproved = false;
+	while (true) {
+		try {
+			return await saveUserPanel(panel, { overwrite: replace });
+		} catch (error) {
+			if (error instanceof PanelNameCollisionError) {
+				const confirmed = await ctx.ui.confirm(
+					"Replace global scrutiny panel?",
+					`Panel "${panel.name}" already exists. Replacing it changes the lineup used by every template that selects this panel. No run will start.`,
+				);
+				if (!confirmed) return "choose-another-name";
+				replace = true;
+				continue;
+			}
+			if (error instanceof LegacyConfigMigrationRequiredError) {
+				if (!migrationApproved) {
+					migrationApproved = await ctx.ui.confirm(
+						"Upgrade existing Scrutiny settings?",
+						"Scrutiny found an older settings format. It is still readable, but panel changes require the current format. Continue to create a private backup, preserve the effective panels, templates, lenses, defaults, and policies, then save this panel? No run will start.",
+					);
+					if (!migrationApproved) {
+						ctx.ui.notify("Nothing changed. Your existing settings and selected lineup were not saved.", "info");
+						return null;
+					}
+				}
+				try {
+					const migrated = await migrateUserConfig();
+					ctx.ui.notify(`Settings upgraded safely${migrated.backup ? `; original backed up at ${migrated.backup}` : ""}. Continuing with the selected lineup.`, "info");
+					continue;
+				} catch (migrationError) {
+					ctx.ui.notify(
+						`Settings were not upgraded, so the panel cannot be saved yet. Your original settings are unchanged. Check file permissions or free space, then try again. Detail: ${errorText(migrationError)}`,
+						"error",
+					);
+					if (await ctx.ui.confirm("Try settings upgrade again?", "Retry without reselecting the panel lineup?")) continue;
+					return null;
+				}
+			}
+			ctx.ui.notify(
+				`Panel was not saved because Scrutiny could not complete an atomic settings update. Your previous settings are unchanged. Check file permissions or free space, then try again. Detail: ${errorText(error)}`,
+				"error",
+			);
+			if (await ctx.ui.confirm("Try saving panel again?", "Retry with the same name, lineup, and thinking levels?")) continue;
+			return null;
+		}
+	}
+}
+
+function thinkingLevelsWithCurrent(current: ThinkingLevel | undefined): ThinkingLevel[] {
+	const levels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+	if (!current || levels.includes(current)) return levels;
+	return [current, ...levels];
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function topBorder(width: number, title: string, theme: Theme): string {

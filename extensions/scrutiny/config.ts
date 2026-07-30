@@ -46,6 +46,39 @@ export class PanelNameCollisionError extends ConfigurationError {
 	}
 }
 
+export class LegacyConfigMigrationRequiredError extends ConfigurationError {
+	readonly file: string;
+
+	constructor(file: string) {
+		super("Your existing Scrutiny settings use an older format. Scrutiny can still read them, but the file must be safely upgraded before panels can be changed.");
+		this.name = "LegacyConfigMigrationRequiredError";
+		this.file = file;
+	}
+}
+
+export class PanelReferencedError extends ConfigurationError {
+	readonly panelName: string;
+	readonly templateNames: string[];
+	readonly operation: "rename" | "remove";
+
+	constructor(panelName: string, templateNames: string[], operation: "rename" | "remove") {
+		super(`Panel "${panelName}" is used by ${templateNames.length === 1 ? "template" : "templates"} ${templateNames.map((name) => `"${name}"`).join(", ")}.`);
+		this.name = "PanelReferencedError";
+		this.panelName = panelName;
+		this.templateNames = templateNames;
+		this.operation = operation;
+	}
+}
+
+export type UserConfigState = {
+	file: string;
+	exists: boolean;
+	legacy: boolean;
+	defaultPanel?: string;
+	panels: PanelDefinition[];
+	templates: ScrutinyConfig["templates"];
+};
+
 type ConfigPatch = {
 	defaultPanel?: string | undefined;
 	panels?: PanelDefinition[];
@@ -78,7 +111,7 @@ function configDocumentWithPanel(value: unknown, panel: PanelDefinition, overwri
 	validatePanelForSave(panel, source);
 	if (!isRecord(value)) throw new ConfigurationError(`${source} must contain a JSON object`);
 	if (value.schemaVersion !== 2) {
-		if (Object.keys(value).length > 0) throw new ConfigurationError(`${source} uses legacy configuration. Migrate it with /scrutiny config edit before adding panels through setup.`);
+		if (Object.keys(value).length > 0) throw new LegacyConfigMigrationRequiredError(source);
 	} else {
 		parseConfigPatch(value, source);
 	}
@@ -102,22 +135,140 @@ function configDocumentWithPanel(value: unknown, panel: PanelDefinition, overwri
 
 export async function saveUserPanel(panel: PanelDefinition, options: { overwrite?: boolean } = {}): Promise<string> {
 	const file = userConfigPath();
-	let document: unknown = {};
-	try {
-		document = JSON.parse(await fs.promises.readFile(file, "utf8"));
-	} catch (error) {
-		if (!isNodeError(error) || error.code !== "ENOENT") throw new ConfigurationError(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-	}
+	const document = await readConfigDocument(file);
 	const next = configDocumentWithPanel(document, panel, options.overwrite, file);
-	await fs.promises.mkdir(path.dirname(file), { recursive: true });
+	await writeConfigDocumentAtomically(file, next);
+	return file;
+}
+
+export async function inspectUserConfig(): Promise<UserConfigState> {
+	const file = userConfigPath();
+	const document = await readConfigDocument(file);
+	const exists = Object.keys(document).length > 0 || fs.existsSync(file);
+	const legacy = exists && document.schemaVersion !== 2;
+	const patch = parseConfigPatch(document, file);
+	return {
+		file,
+		exists,
+		legacy,
+		defaultPanel: patch.defaultPanel,
+		panels: patch.panels ?? [],
+		templates: patch.templates ?? [],
+	};
+}
+
+export async function migrateUserConfig(): Promise<{ file: string; backup?: string }> {
+	const file = userConfigPath();
+	const document = await readConfigDocument(file);
+	if (document.schemaVersion === 2) {
+		parseConfigPatch(document, file);
+		return { file };
+	}
+	if (!Object.keys(document).length) {
+		await writeConfigDocumentAtomically(file, { schemaVersion: 2 });
+		return { file };
+	}
+
+	const original = await fs.promises.readFile(file, "utf8");
+	const next = legacyConfigDocument(document, file);
+	const backup = `${file}.legacy-backup-${Date.now()}-${process.pid}`;
+	try {
+		await fs.promises.writeFile(backup, original, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		await writeConfigDocumentAtomically(file, next);
+		return { file, backup };
+	} catch (error) {
+		throw configurationWriteError(file, error);
+	}
+}
+
+export async function renameUserPanel(panelName: string, nextName: string, options: { updateTemplateReferences?: boolean } = {}): Promise<string> {
+	const file = userConfigPath();
+	await mutateUserConfig(file, (document) => {
+		const panels = requiredNamedObject(document.panels, `${file}.panels`);
+		if (!Object.hasOwn(panels, panelName)) throw new ConfigurationError(`Panel "${panelName}" does not exist in global Scrutiny settings.`);
+		const normalizedName = requiredName(nextName, `${file}.panels`);
+		if (normalizedName !== panelName && Object.hasOwn(panels, normalizedName)) throw new PanelNameCollisionError(normalizedName);
+		if (normalizedName === panelName) return document;
+
+		const templates = optionalNamedObject(document.templates, `${file}.templates`);
+		const references = templateReferences(templates, panelName);
+		if (references.length && !options.updateTemplateReferences) throw new PanelReferencedError(panelName, references, "rename");
+
+		const renamedPanels: Record<string, unknown> = {};
+		for (const [name, panel] of Object.entries(panels)) renamedPanels[name === panelName ? normalizedName : name] = panel;
+		const renamedTemplates = Object.fromEntries(Object.entries(templates).map(([name, template]) => {
+			if (!isRecord(template) || template.panel !== panelName) return [name, template];
+			return [name, { ...template, panel: normalizedName }];
+		}));
+		return {
+			...document,
+			defaultPanel: document.defaultPanel === panelName ? normalizedName : document.defaultPanel,
+			panels: renamedPanels,
+			...(Object.keys(templates).length ? { templates: renamedTemplates } : {}),
+		};
+	});
+	return file;
+}
+
+export async function setDefaultUserPanel(panelName: string): Promise<string> {
+	const file = userConfigPath();
+	await mutateUserConfig(file, (document) => {
+		const panels = requiredNamedObject(document.panels, `${file}.panels`);
+		if (!Object.hasOwn(panels, panelName)) throw new ConfigurationError(`Panel "${panelName}" does not exist in global Scrutiny settings.`);
+		return { ...document, defaultPanel: panelName };
+	});
+	return file;
+}
+
+export async function removeUserPanel(panelName: string, options: { removeReferencedTemplates?: boolean } = {}): Promise<string> {
+	const file = userConfigPath();
+	await mutateUserConfig(file, (document) => {
+		const panels = requiredNamedObject(document.panels, `${file}.panels`);
+		if (!Object.hasOwn(panels, panelName)) throw new ConfigurationError(`Panel "${panelName}" does not exist in global Scrutiny settings.`);
+		const templates = optionalNamedObject(document.templates, `${file}.templates`);
+		const references = templateReferences(templates, panelName);
+		if (references.length && !options.removeReferencedTemplates) throw new PanelReferencedError(panelName, references, "remove");
+
+		const remainingPanels = Object.fromEntries(Object.entries(panels).filter(([name]) => name !== panelName));
+		const remainingTemplates = Object.fromEntries(Object.entries(templates).filter(([name]) => !references.includes(name)));
+		const nextDefault = document.defaultPanel === panelName ? Object.keys(remainingPanels)[0] : document.defaultPanel;
+		const next: Record<string, unknown> = {
+			...document,
+			panels: remainingPanels,
+			...(Object.keys(templates).length ? { templates: remainingTemplates } : {}),
+		};
+		if (nextDefault === undefined) delete next.defaultPanel;
+		else next.defaultPanel = nextDefault;
+		return next;
+	});
+	return file;
+}
+
+export async function saveUserConfigText(text: string): Promise<string> {
+	const file = userConfigPath();
+	let document: unknown;
+	try {
+		document = JSON.parse(text);
+	} catch (error) {
+		throw new ConfigurationError(`Invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (!isRecord(document)) throw new ConfigurationError("Scrutiny config must contain a JSON object.");
+	parseConfigPatch(document, file);
+	await writeConfigDocumentAtomically(file, document);
+	return file;
+}
+
+export async function writeConfigDocumentAtomically(file: string, document: Record<string, unknown>): Promise<void> {
 	const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
 	try {
-		await fs.promises.writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		await fs.promises.mkdir(path.dirname(file), { recursive: true });
+		await fs.promises.writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 		await fs.promises.rename(temporary, file);
+	} catch (error) {
+		throw configurationWriteError(file, error);
 	} finally {
 		await fs.promises.rm(temporary, { force: true }).catch(() => undefined);
 	}
-	return file;
 }
 
 export function exampleConfigJson(): string {
@@ -553,6 +704,102 @@ function optionalThinkingLevel(value: unknown, at: string): ThinkingLevel | unde
 function validatePanelForSave(panel: PanelDefinition, source: string): void {
 	if (!panel.name.trim()) throw new ConfigurationError(`${source} panel name must be non-empty`);
 	parsePanelDefinition(panel.name, { members: panel.members }, `${source}.panels.${panel.name}`);
+}
+
+async function readConfigDocument(file: string): Promise<Record<string, unknown>> {
+	try {
+		const parsed: unknown = JSON.parse(await fs.promises.readFile(file, "utf8"));
+		if (!isRecord(parsed)) throw new ConfigurationError(`${file} must contain a JSON object`);
+		return parsed;
+	} catch (error) {
+		if (isNodeError(error) && error.code === "ENOENT") return {};
+		if (error instanceof ConfigurationError) throw error;
+		throw new ConfigurationError(`${file} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+function legacyConfigDocument(document: Record<string, unknown>, source: string): Record<string, unknown> {
+	const legacyPatch = parseLegacyConfig(document, source);
+	const {
+		schemaVersion: _schemaVersion,
+		panel: _panel,
+		panels: _panels,
+		councils: _councils,
+		defaultPanel: _defaultPanel,
+		templates: _templates,
+		...unchanged
+	} = document;
+	const next: Record<string, unknown> = { ...unchanged, schemaVersion: 2 };
+	if (legacyPatch.defaultPanel !== undefined) next.defaultPanel = legacyPatch.defaultPanel;
+	if (legacyPatch.panels) next.panels = Object.fromEntries(legacyPatch.panels.map((panel) => [
+		panel.name,
+		{
+			members: panel.members.map((member) => ({
+				model: member.model,
+				...(member.thinking === undefined ? {} : { thinking: member.thinking }),
+			})),
+		},
+	]));
+	if (legacyPatch.templates) next.templates = Object.fromEntries(legacyPatch.templates.map((template) => [
+		template.name,
+		Object.fromEntries(Object.entries(template).filter(([key]) => key !== "name")),
+	]));
+
+	const migratedPatch = parseV2Config(next, source);
+	if (JSON.stringify(canonicalValue(comparablePatch(legacyPatch))) !== JSON.stringify(canonicalValue(comparablePatch(migratedPatch)))) {
+		throw new ConfigurationError("Scrutiny stopped the migration because it could not prove that the upgraded settings behave the same. Your original file was not changed.");
+	}
+	return next;
+}
+
+function comparablePatch(patch: ConfigPatch): Omit<ConfigPatch, "diagnostics"> {
+	const { diagnostics: _diagnostics, ...comparable } = patch;
+	return comparable;
+}
+
+function canonicalValue(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonicalValue);
+	if (!isRecord(value)) return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.filter(([, item]) => item !== undefined)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, item]) => [key, canonicalValue(item)]),
+	);
+}
+
+async function mutateUserConfig(
+	file: string,
+	mutate: (document: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+	const existing = await readConfigDocument(file);
+	if (Object.keys(existing).length && existing.schemaVersion !== 2) throw new LegacyConfigMigrationRequiredError(file);
+	const document = Object.keys(existing).length ? existing : { schemaVersion: 2 };
+	parseConfigPatch(document, file);
+	const next = mutate(document);
+	parseConfigPatch(next, file);
+	await writeConfigDocumentAtomically(file, next);
+}
+
+function requiredNamedObject(value: unknown, at: string): Record<string, unknown> {
+	if (value === undefined) return {};
+	if (!isRecord(value)) throw new ConfigurationError(`${at} must be an object keyed by name`);
+	return value;
+}
+
+function optionalNamedObject(value: unknown, at: string): Record<string, unknown> {
+	return requiredNamedObject(value, at);
+}
+
+function templateReferences(templates: Record<string, unknown>, panelName: string): string[] {
+	return Object.entries(templates)
+		.filter(([, template]) => isRecord(template) && template.panel === panelName)
+		.map(([name]) => name);
+}
+
+function configurationWriteError(file: string, error: unknown): ConfigurationError {
+	if (error instanceof ConfigurationError) return error;
+	return new ConfigurationError(`Scrutiny could not safely write ${file}. Your previous settings were left unchanged. ${error instanceof Error ? error.message : String(error)}`);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

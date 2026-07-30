@@ -1,5 +1,5 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Text } from "@earendil-works/pi-tui";
+import { Box, Markdown, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { surfaceFacts } from "./normalize.js";
 import type { DeliberationStrategy, PanelResponse, ScrutinyAnalysis, ScrutinyRunProgress, ScrutinyRunResult, SurfaceFacts } from "./types.js";
 import { formatDuration, formatTokens, truncate } from "./util.js";
@@ -62,27 +62,109 @@ function chip(theme: any, text: string, color: "accent" | "muted" | "success" | 
 }
 
 function progressPhase(progress: ScrutinyRunProgress): string {
-	if (progress.judge?.status === "running") return "map";
-	if (/verify/i.test(progress.message ?? "")) return "verify";
-	if (/done/i.test(progress.message ?? "")) return "done";
-	if (/failed|unusable|error/i.test(progress.message ?? "")) return "attention";
-	return progress.panel.length ? "panel" : "checks";
+	if (progress.status === "error") return "failed";
+	if (progress.status === "ok" || progress.phase === "complete") return "complete";
+	if (progress.phase === "evidence-map") return "evidence map";
+	if (progress.phase === "verify") {
+		const active = progress.verifyChecks?.findIndex((item) => item.status === "running") ?? -1;
+		const pending = progress.verifyChecks?.findIndex((item) => item.status === "pending") ?? -1;
+		const index = active >= 0 ? active : pending;
+		return progress.verifyChecks?.length && index >= 0 ? `verify ${index + 1}/${progress.verifyChecks.length}` : "verify";
+	}
+	const active = progress.panel.findIndex((item) => item.status === "running");
+	const pending = progress.panel.findIndex((item) => item.status === "pending");
+	const index = active >= 0 ? active : pending;
+	return progress.panel.length && index >= 0 ? `panel ${index + 1}/${progress.panel.length}` : progress.panel.length ? "panel" : "starting";
 }
 
-export function renderScrutinyDock(progresses: ScrutinyRunProgress[], theme: any): string[] {
+export type ScrutinyPendingPhase = "waiting" | "starting";
+
+export function renderScrutinyPendingDock(
+	phase: ScrutinyPendingPhase,
+	theme: any,
+	width = 80,
+	elapsedMs = 0,
+): string[] {
+	const detail = phase === "waiting" ? "Pi is finishing its current work" : "preparing task packet";
+	return [
+		fitDockLine(`${theme.bold("scrutiny")} ${theme.fg("dim", `· ${phase} · ${formatDuration(elapsedMs)}`)}`, width),
+		fitDockLine(`${theme.fg("accent", "phase")} ${phase} ${theme.fg("dim", `· esc cancel · ${detail}`)}`, width),
+	];
+}
+
+export function renderScrutinyDock(
+	progresses: ScrutinyRunProgress[],
+	theme: any,
+	width = 80,
+	now = Date.now(),
+): string[] {
 	if (!progresses.length) return [];
-	const lines = [`${theme.fg("accent", "◆")} ${theme.bold("scrutiny")} ${theme.fg("dim", "esc to cancel")}`];
-	for (const progress of progresses.slice(0, 1)) {
-		const ready = progress.panel.filter((item) => item.status === "ready").length;
-		const running = progress.panel.filter((item) => item.status === "running").length;
-		const elapsed = formatDuration(Math.max(0, progress.updatedAt - progress.startedAt));
-		const status = progress.panel.length ? `${ready}/${progress.panel.length}` : "verify";
-		const icon = running ? theme.fg("warning", "◐") : theme.fg("accent", "◆");
-		lines.push(`  ${icon} ${theme.fg("accent", progress.surface)}${theme.fg("dim", progress.strategy ? ` ${progress.strategy}` : "")} ${theme.fg("muted", elapsed)} ${theme.fg("dim", status)} ${theme.fg("muted", progressPhase(progress))}`);
-		const current = progress.panel.find((item) => item.status === "running");
-		if (current) lines.push(`    ${theme.fg("warning", "→")} ${theme.fg("toolOutput", current.model)} ${theme.fg("dim", current.role)}`);
+	const progress = progresses[0]!;
+	const elapsed = formatDuration(Math.max(0, now - progress.startedAt));
+	const identity = [progress.surface, progress.strategy].filter(Boolean).join(" · ");
+	const finishedPanels = progress.panel.filter((item) => item.status === "ready" || item.status === "failed").length;
+	const finishedChecks = progress.verifyChecks?.filter((item) => item.status !== "pending" && item.status !== "running").length ?? 0;
+	const summary = progress.phase === "verify" || (!progress.panel.length && progress.verifyChecks?.length)
+		? `${finishedChecks}/${progress.verifyChecks?.length ?? 0} checks finished`
+		: progress.panel.length ? `${finishedPanels}/${progress.panel.length} panelists finished` : "initializing";
+	const lines = [
+		fitDockLine(`${theme.bold("scrutiny")} ${theme.fg("dim", `· ${identity || "run"} · ${elapsed}`)}`, width),
+		fitDockLine(`${theme.fg(progress.status === "error" ? "error" : "accent", "phase")} ${progressPhase(progress)} ${theme.fg("dim", `· esc cancel · ${summary}`)}`, width),
+	];
+	for (const [index, item] of progress.panel.entries()) {
+		lines.push(progressRow(`panel ${index + 1}/${progress.panel.length}`, panelState(item.status), `${item.model} · ${item.role}`, item.startedAt, theme, width, now));
 	}
+	if (progress.judge) {
+		lines.push(progressRow("map", panelState(progress.judge.status), `${progress.judge.model} · ${progress.judge.role}`, progress.judge.startedAt, theme, width, now));
+	}
+	for (const [index, check] of (progress.verifyChecks ?? []).entries()) {
+		const outcome = check.status === "pass" || check.status === "fail" || check.status === "error" ? ` · ${check.status}` : "";
+		lines.push(progressRow(`check ${index + 1}/${progress.verifyChecks?.length ?? 0}`, verifyRowState(check.status), `${check.name}${outcome}`, check.startedAt, theme, width, now));
+	}
+	if (progress.status === "error" && progress.message) {
+		lines.push(fitDockLine(`${theme.fg("error", "failure")} ${progress.message.replace(/\s+/g, " ")}`, width));
+	}
+	if (progresses.length > 1) lines.push(fitDockLine(theme.fg("dim", `+ ${progresses.length - 1} more active run${progresses.length === 2 ? "" : "s"}`), width));
 	return lines;
+}
+
+function progressRow(
+	step: string,
+	state: "pending" | "running" | "ready" | "failed",
+	detail: string,
+	startedAt: number | undefined,
+	theme: any,
+	width: number,
+	now: number,
+): string {
+	const stateColor = state === "ready"
+		? "success"
+		: state === "failed"
+			? "error"
+			: state === "running" ? "warning" : "dim";
+	const duration = state === "running" && startedAt !== undefined ? ` ${formatDuration(Math.max(0, now - startedAt))}` : "";
+	return fitDockLine(
+		`${padPlain(step, 11)} ${theme.fg(stateColor, padPlain(`${state}${duration}`, 14))} ${theme.fg(state === "pending" ? "dim" : "toolOutput", detail)}`,
+		width,
+	);
+}
+
+function panelState(status: ScrutinyRunProgress["panel"][number]["status"]): "pending" | "running" | "ready" | "failed" {
+	return status;
+}
+
+function verifyRowState(status: NonNullable<ScrutinyRunProgress["verifyChecks"]>[number]["status"]): "pending" | "running" | "ready" | "failed" {
+	if (status === "pass") return "ready";
+	if (status === "fail" || status === "error") return "failed";
+	return status;
+}
+
+function padPlain(value: string, width: number): string {
+	return value.length >= width ? value : `${value}${" ".repeat(width - value.length)}`;
+}
+
+function fitDockLine(line: string, width: number): string {
+	return truncateToWidth(line, Math.max(1, width), "…");
 }
 
 function renderCompactResult(result: ScrutinyRunResult, theme: any): string {
